@@ -18,6 +18,33 @@ version number** — the version is the only handle a user has when asked to go 
 
 ---
 
+## 0.6.2 — 2026-10-05 (uv route only)
+
+**PATCH: an update now takes effect without restarting Claude (O8, 13:00–13:19, register F-C7).**
+After the 0.6.1 install the 0.6.0 helper kept serving, because the new launcher attached to it.
+
+| artifact | sha256 |
+|---|---|
+| `launcher.py` | `59f433f8763dc4bbca26342706dcbe366da7d6e473975dba974b5821c308afe4` |
+| `helper.py` (helper 1.0.2) | `6a372628151efb734395a4828cc539043250309b173434080a8a86036deed13a` |
+| `manifest.json` (0.6.2) | `744bbbb8ef216ab576b758c1e06ba91b3cf810c61464a7533705e7bced03465d` |
+
+**Approver:** pending — Reviewer, at the 0.6.2 gate. No site UI or microcopy change (Reviewer 13:32).
+
+1. **Hand-off (P1).** A launcher whose bundled helper is NEWER than the running one asks it to stop
+   through the helper's paired-only `POST /shutdown` (no Origin; the pairing secret), waits for the
+   port, and starts its own (`helper_replaced`). An older or equal bundled helper attaches as before.
+2. **Orphan self-exit (P2).** A helper started by a launcher stops when that launcher is gone (its
+   parent changes), so a launcher killed without cleanup no longer leaves a stale helper.
+3. **Pre-0.6.2 helpers (P3).** A running 1.0.0/1.0.1 helper has no `/shutdown`: recorded once as
+   `helper_stale_unreplaceable` and left alone; one Claude restart replaces it.
+4. Tests `poc_a2b_handoff.py` H6–H8 with the 0.6.1 controls.
+5. **Release v2 (re-review-4, Reviewer 13:52):** M-4, every launcher→helper call bypasses HTTP proxies
+   (the pairing secret can no longer reach a proxy); M-1, the hand-off runs outside the supervisor lock and
+   honours `stop()`. Tests `poc_m1m4.py` 7/7 with the v1 controls. The first seal is kept as `SHA256SUMS-v1.txt`.
+
+---
+
 ## 0.6.1 — 2026-10-05 (uv route only)
 
 **PATCH: a live defect in the sign-in path, found in the Owner's O8 session (12:45-12:48).** After Google's

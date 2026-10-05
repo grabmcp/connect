@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""O7 -- the Owner's ONE build command for the 0.6.1 Claude extension (amendment 2, D4).
+"""O7 -- the Owner's ONE build command for the 0.6.2 Claude extension (amendment 2, D4).
 
-    python3 ".../operations/20261002-p2-bridge-s1/releases/0.6.1/build-0.6.1.py" /abs/path/client.json
+    python3 ".../operations/20261002-p2-bridge-s1/releases/0.6.2/build-0.6.2.py" /abs/path/client.json
 
 v2 (gate conditions 1-2, Reviewer 12:05): it runs ONLY as the RELEASED copy, from its release
 folder. It takes the extension's code from that folder, after verifying EVERY entry of the
@@ -39,7 +39,7 @@ SERVER = os.path.join(S1, "bundle", "server")
 MCPB = os.path.join(S1, "tools", "node_modules", ".bin", "mcpb")
 FILES = ("launcher.py", "helper.py", "helper_compare.py", "manifest.json", "requirements.in",
          "requirements.txt")
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 ALLOW_LINE = re.compile(r'^ALLOWED_PROPERTIES = frozenset\(\{"\d+"\}\)$', re.M)
 
 
@@ -110,7 +110,7 @@ def verify_release():
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Build the 0.6.1 grabmcp GA4 extension (.mcpb).")
+    ap = argparse.ArgumentParser(description="Build the 0.6.2 grabmcp GA4 extension (.mcpb).")
     ap.add_argument("client_json")
     ap.add_argument("--property", default="449629553")
     ap.add_argument("--out", default=os.path.expanduser("~/grabmcp-build"))
@@ -143,7 +143,7 @@ def main():
         fail("the mcpb packer is missing: %s" % MCPB)
 
     # ---- stage
-    stage = tempfile.mkdtemp(prefix="grabmcp-ga4-0.6.1-")
+    stage = tempfile.mkdtemp(prefix="grabmcp-ga4-0.6.2-")
     try:
         for f in FILES:
             # copyfile + an explicit mode: the release files are 0444, and the stage must be
@@ -156,7 +156,7 @@ def main():
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         man = json.load(open(os.path.join(stage, "manifest.json")))
         if man.get("version") != VERSION or "user_config" in man:
-            fail("the bundle manifest is not the 0.6.1 no-settings manifest")
+            fail("the bundle manifest is not the 0.6.2 no-settings manifest")
         lp = os.path.join(stage, "launcher.py")
         t = open(lp, encoding="utf-8").read()
         if len(ALLOW_LINE.findall(t)) != 1:

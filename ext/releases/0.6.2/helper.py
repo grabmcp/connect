@@ -56,7 +56,7 @@ ALLOWED_ORIGINS = frozenset(
     + ([os.environ["GA4_HELPER_ALLOWED_ORIGIN"]] if os.environ.get("GA4_HELPER_ALLOWED_ORIGIN")
        else []))
 SERVICE = "grabmcp-ga4-helper"
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 DEFAULT_PORT = 50812
 LAUNCHER_STATUS = os.environ.get("GA4_BRIDGE_STATUS", "")
 # 0.6.0 P1 custody (ruling D1): the user's LOGIN keychain unless one is configured, by path.
@@ -899,11 +899,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path not in ("/connect/start", "/connect/callback-wait", "/disconnect",
-                             "/verify", "/compare"):
+                             "/verify", "/compare", "/shutdown"):
             return self._send(404, {"error": "no such path"})
-        bad = self._authorised(paired_only=(self.path == "/compare"))
+        bad = self._authorised(paired_only=(self.path in ("/compare", "/shutdown")))
         if bad:
             return self._send(bad[0], {"error": bad[1]})
+
+        if self.path == "/shutdown":
+            # 0.6.2 (P1, O8 13:00): a launcher bundling a NEWER helper asks this one to stop, so
+            # an update takes effect without restarting Claude. Paired local tools only (no
+            # Origin, the pairing secret), like /compare. This process stops listening and
+            # exits; a `security` it may have left running is in its own session and untouched.
+            log("shutdown requested by a paired local caller (version %s)" % VERSION)
+            self._send(200, {"stopping": True, "version": VERSION})
+            _stop_serving("shutdown requested")
+            return
 
         if self.path == "/compare":
             # KPI-3, ruling D3: the helper makes BOTH GA4 calls itself; the access token never
@@ -1100,6 +1110,38 @@ def reverify_after_restart():
                                               "" if ok else " (%s)" % err))
 
 
+_SERVER = {"srv": None}
+
+
+def _stop_serving(why):
+    """Stop the HTTP server from another thread; main() then returns and the process exits."""
+    srv = _SERVER["srv"]
+    if srv is not None:
+        log("stopping: %s" % why)
+        threading.Thread(target=srv.shutdown, daemon=True).start()
+
+
+def watch_parent():
+    """0.6.2 (P2): started by a launcher (GA4_HELPER_PARENT_WATCH=1), this helper stops when that
+    launcher is gone -- its parent pid changes (macOS re-parents an orphan to launchd, pid 1).
+    A launcher killed without its cleanup can therefore no longer leave a stale helper behind."""
+    if os.environ.get("GA4_HELPER_PARENT_WATCH") != "1":
+        return
+    first = os.getppid()
+
+    def loop():
+        while True:
+            time.sleep(PARENT_CHECK_S)
+            if os.getppid() != first:
+                _stop_serving("the launcher that started this helper is gone (parent %d -> %d)"
+                              % (first, os.getppid()))
+                return
+    threading.Thread(target=loop, daemon=True).start()
+
+
+PARENT_CHECK_S = float(os.environ.get("GA4_HELPER_PARENT_CHECK_S") or 5.0)
+
+
 def main():
     ensure_pairing()
     state_load()
@@ -1107,6 +1149,8 @@ def main():
         threading.Thread(target=reverify_after_restart, daemon=True).start()
     port = int(os.environ.get("GA4_HELPER_PORT", str(DEFAULT_PORT)))
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)   # loopback ONLY
+    _SERVER["srv"] = srv
+    watch_parent()
     log("allowed origins: %s" % ", ".join(sorted(ALLOWED_ORIGINS)))
     log("TLS trust store: %s" % TLS_SOURCE)
     log("endpoints: auth=%s token=%s revoke=%s admin=%s" % (
@@ -1119,6 +1163,8 @@ def main():
     log("listening on 127.0.0.1:%d" % srv.server_address[1])
     print(json.dumps({"port": srv.server_address[1]}), flush=True)
     srv.serve_forever()
+    srv.server_close()
+    log("stopped")
 
 
 if __name__ == "__main__":

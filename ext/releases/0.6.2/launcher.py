@@ -51,6 +51,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -817,11 +818,19 @@ class Upstream:
             pass
 
 
-def helper_probe(port):
-    """"ours" | "none" | "foreign" | "unknown" -- what answers on the helper port."""
+# 0.6.2 v2 (re-review-4 M-4): every launcher->helper call goes through an opener with NO proxy.
+# A plain urlopen honours http_proxy/HTTP_PROXY, and would send the pairing secret to a proxy.
+NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def helper_probe(port, out=None):
+    """"ours" | "none" | "foreign" | "unknown" -- what answers on the helper port. `out`, if
+    given, receives the /health document (0.6.2: its `version` and `run_id`)."""
     try:
-        with urllib.request.urlopen("http://127.0.0.1:%d/health" % port, timeout=3) as f:
+        with NOPROXY.open("http://127.0.0.1:%d/health" % port, timeout=3) as f:
             doc = json.loads(f.read().decode() or "{}")
+        if out is not None and isinstance(doc, dict):
+            out.update(doc)
         return "ours" if doc.get("service") == HELPER_SERVICE else "foreign"
     except urllib.error.HTTPError:
         return "foreign"
@@ -833,6 +842,36 @@ def helper_probe(port):
         return "unknown"
 
 
+def _vtuple(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except (TypeError, ValueError):
+        return None
+
+
+def bundled_helper_version():
+    """The VERSION of the helper.py shipped beside this launcher (0.6.2, P1)."""
+    try:
+        with open(os.path.join(HERE, "helper.py"), encoding="utf-8") as fh:
+            m = re.search(r'^VERSION = "([0-9.]+)"$', fh.read(), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def pairing_from_keychain():
+    """The helper's pairing secret, read like the credential (by path, never on a locked
+    keychain, never killed), so the launcher can ask a stale helper to stop."""
+    kc = keychain_path()
+    if keychain_status(kc) != "unlocked":
+        return None
+    res = sec_call(["find-generic-password", "-a", "ga4-helper-pairing", "-s", KEYCHAIN_SERVICE,
+                    "-w", kc])
+    if res[0] == "done" and res[1] == 0:
+        return (res[2] or "").strip() or None
+    return None
+
+
 def helper_env(base_env):
     """What the helper is told: where the credential and the client are, where the launcher's
     record is (its Claude row), and its own state file. Never a credential file of ours."""
@@ -840,7 +879,8 @@ def helper_env(base_env):
          if k not in ("GOOGLE_APPLICATION_CREDENTIALS", "GA4_BRIDGE_CLIENT_SECRET")}
     e.update(GA4_BRIDGE_KEYCHAIN=keychain_path(), GA4_BRIDGE_STATUS=STATUS_PATH,
              GA4_HELPER_STATE=os.path.join(PRIVATE, "helper-state.json"),
-             GA4_HELPER_PORT=str(HELPER_PORT))
+             GA4_HELPER_PORT=str(HELPER_PORT),
+             GA4_HELPER_PARENT_WATCH="1")      # 0.6.2 (P2): it stops when we are gone
     c = client_path()
     if c:
         e["GA4_OAUTH_CLIENT_JSON"] = c
@@ -864,6 +904,7 @@ class HelperSupervisor:
         self.lock = threading.Lock()
         self.stop_ev = threading.Event()
         self.last = None
+        self.unreplaceable = None      # run_id of a stale helper that has no /shutdown (P3)
 
     def _record(self, outcome):
         if outcome != self.last:
@@ -888,19 +929,76 @@ class HelperSupervisor:
         self._record("started")
 
     def check(self):
+        handoff = None
         with self.lock:
             if self.stop_ev.is_set():
                 return
             if self.proc is not None and self.proc.poll() is not None:
                 self.proc = None
                 self._record("exited")
-            state = helper_probe(HELPER_PORT)
+            doc = {}
+            state = helper_probe(HELPER_PORT, doc)
             if state == "none" and self.proc is None:
                 self._start()
             elif state == "ours":
-                self._record("running" if self.proc is not None else "attached")
+                mine, theirs = _vtuple(bundled_helper_version()), _vtuple(doc.get("version"))
+                if (self.proc is None and mine and theirs and theirs < mine
+                        and doc.get("run_id") != self.unreplaceable):
+                    handoff = doc
+                else:
+                    self._record("running" if self.proc is not None else "attached")
             elif state == "foreign":
                 self._record("helper_port_foreign")
+        if handoff is not None:
+            self._handoff(handoff)            # M-1: OUTSIDE the lock (it makes slow calls)
+
+    def _rec(self, outcome):
+        with self.lock:
+            self._record(outcome)
+
+    def _handoff(self, doc):
+        """0.6.2 (P1): the running helper is OLDER than ours -- an update installed while Claude
+        was open. Ask it to stop through its paired /shutdown, wait for the port, start ours.
+        Called WITHOUT the lock (re-review-4 M-1: the keychain read, the POST and the port wait
+        are slow, and stop() must never wait behind them); the lock is taken only to record and to
+        start. A helper older than 1.0.2 has no /shutdown (P3): recorded once as
+        helper_stale_unreplaceable and left alone -- only a Claude restart replaces it."""
+        secret = pairing_from_keychain()
+        if self.stop_ev.is_set():
+            return
+        if not secret:
+            self._rec("helper_handoff_no_pairing")
+            return
+        req = urllib.request.Request("http://127.0.0.1:%d/shutdown" % HELPER_PORT, data=b"{}",
+                                     method="POST", headers={"X-Pair-Secret": secret,
+                                                             "Content-Type": "application/json"})
+        try:
+            with NOPROXY.open(req, timeout=5) as f:
+                code = f.status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        except Exception as exc:
+            log("helper handoff: /shutdown failed: %s" % type(exc).__name__)
+            self._rec("helper_handoff_failed")
+            return
+        if code == 404:
+            with self.lock:
+                self.unreplaceable = doc.get("run_id")
+                self._record("helper_stale_unreplaceable")
+            return
+        if code != 200:
+            self._rec("helper_handoff_refused")
+            return
+        end = time.time() + 15
+        while (time.time() < end and not self.stop_ev.is_set()        # M-1: honours stop()
+               and helper_probe(HELPER_PORT) != "none"):
+            self.stop_ev.wait(0.25)
+        with self.lock:
+            if self.stop_ev.is_set() or self.proc is not None:
+                return                                                # stopping: start nothing
+            log("helper handoff: %s -> %s" % (doc.get("version"), bundled_helper_version()))
+            self._start()
+            self._record("helper_replaced")
 
     def run(self):
         while not self.stop_ev.is_set():
