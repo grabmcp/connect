@@ -18,6 +18,29 @@ version number** — the version is the only handle a user has when asked to go 
 
 ---
 
+## 0.6.1 — 2026-10-05 (uv route only)
+
+**PATCH: a live defect in the sign-in path, found in the Owner's O8 session (12:45-12:48).** After Google's
+consent the helper's code exchange failed "unreachable" (status 0): the extension's interpreter (python.org
+3.11.5, chosen by `uv python find 3.11`) has no CA bundle for stdlib TLS (`CERTIFICATE_VERIFY_FAILED`).
+
+| artifact | sha256 |
+|---|---|
+| `helper.py` (helper 1.0.1) | `bbb4c4983d026647e5f6591e1c90a76a02fa0251c44cbe6b253c04ff88b56a58` |
+| `helper_compare.py` | `9e23886d955969c5395880a21a5f1840c125a2a6259fbda4cc85f18bd74e90c3` |
+| `manifest.json` (0.6.1) | `e6a09e75fe1ccf3d55291fe93e663405dd2e71538baf4b1403feb71a4427d7ba` |
+
+`launcher.py` is unchanged from 0.6.0 v2. **Approver:** pending — Reviewer, at the 0.6.1 gate.
+
+1. The helper and `helper_compare` build their TLS context from the pinned `certifi` bundle
+   (stdlib default only as a fallback); the helper logs its trust store at start.
+2. Every outbound failure logs the exception TYPE (e.g. `URLError:SSLCertVerificationError`), never a
+   URL query, header or body.
+3. Test `poc_tls_061.py` (live, public, credential-free, under that interpreter): 0.6.1 reaches Google;
+   the 0.6.0 controls reproduce the O8 failure.
+
+---
+
 ## 0.6.0 — 2026-10-05 (uv route only; POC KPIs, scope v1.3)
 
 **MINOR under this file's scheme: our behaviour changes** (no extension settings, the helper runs

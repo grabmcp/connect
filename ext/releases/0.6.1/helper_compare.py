@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import sys
 import threading
 import time
@@ -140,13 +141,22 @@ def resolve_base(base_url=None):
                        % (base, GOOGLE_DATA_API))
 
 
+def _tls():
+    """0.6.1: the pinned certifi bundle (the extension's interpreter may have no CA store)."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def direct_run_report(prop_rn, body, token, base_url=None, timeout=30):
     url = "%s/v1beta/%s:runReport" % (resolve_base(base_url), prop_rn)
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
                                  headers={"Authorization": "Bearer " + token,
                                           "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as f:
+        with urllib.request.urlopen(req, timeout=timeout, context=_tls()) as f:
             return json.loads(f.read().decode())
     except urllib.error.HTTPError as e:
         try:

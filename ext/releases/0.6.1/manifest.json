@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "ga4-bridge",
   "display_name": "Google Analytics 4 (bridge)",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Runs Google's official Analytics MCP server unchanged, with a launcher that supplies credentials, repairs its error reporting, adds tool annotations, limits reports to the allowed property, and runs the local helper the grabmcp website talks to.",
   "author": {
     "name": "grabmcp"

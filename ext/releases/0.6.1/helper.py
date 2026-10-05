@@ -35,6 +35,7 @@ import hmac
 import json
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -55,7 +56,7 @@ ALLOWED_ORIGINS = frozenset(
     + ([os.environ["GA4_HELPER_ALLOWED_ORIGIN"]] if os.environ.get("GA4_HELPER_ALLOWED_ORIGIN")
        else []))
 SERVICE = "grabmcp-ga4-helper"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 DEFAULT_PORT = 50812
 LAUNCHER_STATUS = os.environ.get("GA4_BRIDGE_STATUS", "")
 # 0.6.0 P1 custody (ruling D1): the user's LOGIN keychain unless one is configured, by path.
@@ -521,16 +522,43 @@ def claude_row():
 
 
 # ------------------------------------------------------------------ provider calls
+
+def tls_context():
+    """0.6.1 (O8 live defect, 2026-10-05 12:45): the extension's interpreter can be a python.org
+    build whose OpenSSL has NO CA bundle (its `etc/openssl/cert.pem` absent until "Install
+    Certificates" is run), so stdlib TLS to Google failed with CERTIFICATE_VERIFY_FAILED and the
+    code exchange was reported as "unreachable". The pinned `certifi` bundle (requirements.txt)
+    is used; the stdlib default only if certifi is missing."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where()), "certifi"
+    except Exception:
+        return ssl.create_default_context(), "stdlib-default"
+
+
+TLS, TLS_SOURCE = tls_context()
+
+
 def _post_form(url, form):
     body = urllib.parse.urlencode(form).encode()
     req = urllib.request.Request(url, data=body, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=15) as f:
+        with urllib.request.urlopen(req, timeout=15, context=TLS) as f:
             return f.status, f.read().decode()
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode()
     except Exception as e:
-        return 0, json.dumps({"error": "unreachable", "detail": type(e).__name__})
+        why = _why(e)
+        log("outbound POST %s failed before any answer: %s" % (urllib.parse.urlsplit(url).netloc, why))
+        return 0, json.dumps({"error": "unreachable", "detail": why})
+
+
+def _why(e):
+    """The exception TYPE (and an SSL/URL reason's type) for the "unreachable" detail -- never a
+    URL query, a header or a body, so no secret can reach the log."""
+    r = getattr(e, "reason", None)
+    return type(e).__name__ + (":" + type(r).__name__ if r is not None else "") + (
+        ":" + getattr(r, "reason", "") if getattr(r, "reason", None) else "")
 
 
 def access_token(force=False):
@@ -579,11 +607,12 @@ def _get_summaries(tok):
     req = urllib.request.Request(ADMIN_BASE + "/v1beta/accountSummaries",
                                  headers={"Authorization": "Bearer " + tok})
     try:
-        with urllib.request.urlopen(req, timeout=15) as f:
+        with urllib.request.urlopen(req, timeout=15, context=TLS) as f:
             return f.status, f.read().decode(), None
     except urllib.error.HTTPError as e:
         return e.code, "", "http_%d" % e.code
     except Exception as e:
+        log("outbound GET accountSummaries failed before any answer: %s" % _why(e))
         return 0, "", "unreachable_%s" % type(e).__name__
 
 
@@ -1079,6 +1108,7 @@ def main():
     port = int(os.environ.get("GA4_HELPER_PORT", str(DEFAULT_PORT)))
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)   # loopback ONLY
     log("allowed origins: %s" % ", ".join(sorted(ALLOWED_ORIGINS)))
+    log("TLS trust store: %s" % TLS_SOURCE)
     log("endpoints: auth=%s token=%s revoke=%s admin=%s" % (
         AUTH_URI or "-", TOKEN_URI or "-", REVOKE_URI or "-", ADMIN_BASE or "-"))
     if CLIENT_CONFIG_ERROR:
