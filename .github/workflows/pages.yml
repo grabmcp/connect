@@ -1,0 +1,70 @@
+# Build the grabmcp GA4 extension (.mcpb) and deploy it WITH the site to GitHub Pages.
+# Owner ruling D6 (2026-10-05 12:11): the .mcpb is downloaded from the site. The Google OAuth client
+# lives ONLY in the encrypted repository secret GA4_OAUTH_CLIENT_JSON; it is never committed.
+# The build is the released ext/releases/0.6.0/build-0.6.0.py: it verifies every release file
+# against SHA256SUMS.txt and Google's server against SERVER-TREE.sha256, and refuses on mismatch.
+name: Build and deploy (site + extension)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the pinned packer (@anthropic-ai/mcpb 2.1.2, from the lock)
+        working-directory: ext/tools
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Write the OAuth client from the secret (never printed)
+        env:
+          CLIENT_JSON: ${{ secrets.GA4_OAUTH_CLIENT_JSON }}
+        run: |
+          if [ -z "$CLIENT_JSON" ]; then
+            echo "::error::The repository secret GA4_OAUTH_CLIENT_JSON is not set. Nothing was built or deployed."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$CLIENT_JSON" > "$RUNNER_TEMP/client.json"
+      - name: Build the extension (release seal and server tree verified)
+        run: python3 ext/releases/0.6.0/build-0.6.0.py "$RUNNER_TEMP/client.json" --out "$RUNNER_TEMP/out"
+      - name: Remove the client file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/client.json"
+      - name: Assemble the site and the extension
+        run: |
+          mkdir -p "$RUNNER_TEMP/_site"
+          cp site/index.html site/app.js site/style.css "$RUNNER_TEMP/_site/"
+          cp "$RUNNER_TEMP/out/grabmcp-ga4-bridge.mcpb" "$RUNNER_TEMP/_site/"
+          ls -l "$RUNNER_TEMP/_site"
+          sha256sum "$RUNNER_TEMP/_site/"*
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

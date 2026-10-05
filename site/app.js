@@ -11,9 +11,9 @@
   // condition 3, Reviewer 12:05); the tests serve a copy with this one constant rewritten.
   var HELPER_PORT = 50812;
 
-  // D6, the ONE switch (Reviewer 11:24): false = the participant opens the file they RECEIVED
-  // (default until the Owner rules); true = the page offers the download. No rebuild either way.
-  var MCPB_ON_SITE = false;
+  // D6, the ONE switch. Owner ruling 2026-10-05 12:11: the .mcpb is downloaded from this site
+  // (true). false = the participant opens a file they received instead.
+  var MCPB_ON_SITE = true;
 
   var TICK_MS = 2500;              // how often the page checks the helper
   var REQUEST_TIMEOUT_MS = 8000;   // one request may take this long before it counts as failed

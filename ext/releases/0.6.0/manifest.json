@@ -1,0 +1,72 @@
+{
+  "manifest_version": "0.4",
+  "name": "ga4-bridge",
+  "display_name": "Google Analytics 4 (bridge)",
+  "version": "0.6.0",
+  "description": "Runs Google's official Analytics MCP server unchanged, with a launcher that supplies credentials, repairs its error reporting, adds tool annotations, limits reports to the allowed property, and runs the local helper the grabmcp website talks to.",
+  "author": {
+    "name": "grabmcp"
+  },
+  "server": {
+    "type": "uv",
+    "entry_point": "launcher.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--no-project",
+        "--python",
+        "3.11",
+        "--with-requirements",
+        "${__dirname}/requirements.txt",
+        "${__dirname}/launcher.py"
+      ]
+    }
+  },
+  "tools": [
+    {
+      "name": "get_account_summaries",
+      "description": "List GA4 accounts and properties"
+    },
+    {
+      "name": "list_google_ads_links",
+      "description": "List Google Ads links"
+    },
+    {
+      "name": "get_property_details",
+      "description": "Get GA4 property details"
+    },
+    {
+      "name": "list_property_annotations",
+      "description": "List property annotations"
+    },
+    {
+      "name": "get_custom_dimensions_and_metrics",
+      "description": "List custom dimensions and metrics"
+    },
+    {
+      "name": "run_report",
+      "description": "Run a GA4 report"
+    },
+    {
+      "name": "run_realtime_report",
+      "description": "Run a GA4 realtime report"
+    },
+    {
+      "name": "run_funnel_report",
+      "description": "Run a GA4 funnel report"
+    },
+    {
+      "name": "run_conversions_report",
+      "description": "Run a GA4 conversions report"
+    }
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin"
+    ],
+    "runtimes": {
+      "python": ">=3.11"
+    }
+  }
+}
