@@ -56,7 +56,7 @@ ALLOWED_ORIGINS = frozenset(
     + ([os.environ["GA4_HELPER_ALLOWED_ORIGIN"]] if os.environ.get("GA4_HELPER_ALLOWED_ORIGIN")
        else []))
 SERVICE = "grabmcp-ga4-helper"
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 DEFAULT_PORT = 50812
 LAUNCHER_STATUS = os.environ.get("GA4_BRIDGE_STATUS", "")
 # 0.6.0 P1 custody (ruling D1): the user's LOGIN keychain unless one is configured, by path.
@@ -511,10 +511,13 @@ def claude_row():
     if not LAUNCHER_STATUS or not os.path.exists(LAUNCHER_STATUS):
         return {"last_report_at": None, "last_tool": None, "verified": False}
     try:
-        evs = json.load(open(LAUNCHER_STATUS)).get("events", [])
+        doc = json.load(open(LAUNCHER_STATUS))
+        evs = doc.get("events", []) if isinstance(doc, dict) else []
     except Exception:
         return {"last_report_at": None, "last_tool": None, "verified": False}
-    reports = [e for e in evs if e.get("kind") == "report"]
+    # 0.6.3 v2 (F2, found by its test): a wrong-shape record must never fail /status
+    reports = [e for e in (evs if isinstance(evs, list) else [])
+               if isinstance(e, dict) and e.get("kind") == "report"]
     if not reports:
         return {"last_report_at": None, "last_tool": None, "verified": False}
     last = reports[-1]
@@ -1142,9 +1145,74 @@ def watch_parent():
 PARENT_CHECK_S = float(os.environ.get("GA4_HELPER_PARENT_CHECK_S") or 5.0)
 
 
+def _launcher_read_pending():
+    """True if the LAUNCHER's own record shows a keychain read still pending (a `security` process
+    it started that has not returned) -- the helper then starts no second read beside it. Read-only;
+    nothing is signalled -- `ps` only."""
+    pend = set()
+    try:                                  # 0.6.3 v2 (F2): ANY shape problem is "no pending read"
+        doc = json.load(open(LAUNCHER_STATUS, encoding="utf-8")) if LAUNCHER_STATUS else {}
+        evs = doc.get("events", []) if isinstance(doc, dict) else []
+        for e in evs if isinstance(evs, list) else []:
+            if not isinstance(e, dict) or e.get("kind") != "credential_reread":
+                continue
+            try:
+                pid = int(e.get("sec_pid"))
+            except (TypeError, ValueError):
+                continue
+            if e.get("outcome") == "pending":
+                pend.add(pid)
+            elif e.get("outcome") == "late":
+                pend.discard(pid)
+    except Exception:
+        return False
+    for pid in pend:                      # F3/F5: `ps` only (no signal of any kind), int, bounded
+        try:
+            comm = subprocess.run(["/bin/ps", "-o", "comm=", "-p", str(int(pid))],
+                                  capture_output=True, text=True, timeout=5).stdout.strip()
+        except Exception:
+            continue
+        if os.path.basename(comm) == "security":
+            return True
+    return False
+
+
+def reconcile_from_keychain():
+    """0.6.3 (O8 14:36): an update REPLACES the extension folder, and with it this helper's state
+    file -- so a fresh helper reported "not connected" over a refresh token still in the keychain.
+    With NO state file, the keychain is read ONCE: never on a locked keychain (that is where a
+    dialog would come from), never beside a pending launcher read, never killed (_sec)."""
+    if os.path.exists(STATE_PATH) or not KEYCHAIN:
+        return
+    if not _keychain_readable():
+        log("no state file; the keychain is not unlocked, so it is not read (no dialog)")
+        return
+    if _launcher_read_pending():
+        log("no state file; a launcher keychain read is still pending, so none is started here")
+        return
+    kind, val = refresh_token_read()      # F6: `val` is the token on "present", a reason otherwise
+    if kind == "present":
+        with LOCK:
+            STATE["local_credential"] = "present"
+            STATE["provider_authorization"] = "granted"
+            STATE["connection_id"] = _b64u(os.urandom(9))
+            # 0.6.3 v2 (F1): a connection EXISTS; nothing in this run has checked it yet. This is
+            # published as "unverified" (published_access) -- never "not_connected" -- until the
+            # re-verify records the truth (verified, or a truthful failure).
+            STATE["google_access"] = "verified"
+            STATE["verification"] = None
+        state_save()
+        log("no state file; a refresh token IS in the keychain -- connection restored, re-verifying")
+    elif kind == "absent":
+        log("no state file; no refresh token in the keychain -- not connected")
+    else:
+        log("no state file; the keychain could not be read (%s) -- state left as not connected" % val)
+
+
 def main():
     ensure_pairing()
     state_load()
+    reconcile_from_keychain()
     if STATE["local_credential"] == "present" and CONFIGURED and _keychain_readable():
         threading.Thread(target=reverify_after_restart, daemon=True).start()
     port = int(os.environ.get("GA4_HELPER_PORT", str(DEFAULT_PORT)))

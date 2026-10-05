@@ -18,6 +18,33 @@ version number** — the version is the only handle a user has when asked to go 
 
 ---
 
+## 0.6.3 — 2026-10-05 (uv route only)
+
+**PATCH: after an update the site no longer shows "not connected" over a working credential (O8 14:34–14:39,
+register F-C8).** The helper's state file lives in the extension folder, which an update replaces; the
+refresh token survives in the login keychain, and Claude's tools kept answering (the Owner, 14:39).
+
+| artifact | sha256 |
+|---|---|
+| `helper.py` (helper 1.0.3) | `95feac6b8310e50aacf65d532f8798b2a12060b422224e42f26f6fa7fbdfd4c3` |
+| `manifest.json` (0.6.3) | `a1dc5cb153a786a88b5bd40dcada56b5e21703760df76ac306f9a09a2a132715` |
+
+`launcher.py` is unchanged from 0.6.2 v2. **Approver:** pending — Reviewer, at the 0.6.3 gate. No UI change.
+
+1. With NO state file, the helper reads the refresh token ONCE at start (the three-way read through the
+   never-kill `_sec`): never on a locked keychain, never beside a pending launcher read. On "present" it
+   restores `local_credential: present` and runs the existing re-verify.
+2. Tests `poc_reconcile_063.py` R1–R4 with the 1.0.2 control. Buffer: move the state file out of the
+   extension folder.
+3. Helper 1.0.3 > 1.0.2, so the 0.6.2 → 0.6.3 update hands off by itself (P1, no Claude restart).
+4. **Release v2 (re-review-6, Reviewer 14:44):** F1, a reconciled connection reads `unverified` at once
+   (never `not_connected`) until the re-verify decides; F2, a wrong-shape launcher record can no longer
+   crash the helper at start or fail `/status` (both readers); F3, the `ps` check is bounded with `int(pid)`;
+   F5/F6, no existence signal, the token variable renamed. Tests `poc_reconcile_063b.py` 6/6 with the v1
+   controls. The first seal is kept as `SHA256SUMS-v1.txt`.
+
+---
+
 ## 0.6.2 — 2026-10-05 (uv route only)
 
 **PATCH: an update now takes effect without restarting Claude (O8, 13:00–13:19, register F-C7).**

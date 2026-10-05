@@ -1,7 +1,7 @@
 # Build the grabmcp GA4 extension (.mcpb) and deploy it WITH the site to GitHub Pages.
 # Owner ruling D6 (2026-10-05 12:11): the .mcpb is downloaded from the site. The Google OAuth client
 # lives ONLY in the encrypted repository secret GA4_OAUTH_CLIENT_JSON; it is never committed.
-# The build is the released ext/releases/0.6.2/build-0.6.2.py: it verifies every release file
+# The build is the released ext/releases/0.6.3/build-0.6.3.py: it verifies every release file
 # against SHA256SUMS.txt and Google's server against SERVER-TREE.sha256, and refuses on mismatch.
 name: Build and deploy (site + extension)
 
@@ -41,7 +41,7 @@ jobs:
           umask 077
           printf '%s' "$CLIENT_JSON" > "$RUNNER_TEMP/client.json"
       - name: Build the extension (release seal and server tree verified)
-        run: python3 ext/releases/0.6.2/build-0.6.2.py "$RUNNER_TEMP/client.json" --out "$RUNNER_TEMP/out"
+        run: python3 ext/releases/0.6.3/build-0.6.3.py "$RUNNER_TEMP/client.json" --out "$RUNNER_TEMP/out"
       - name: Remove the client file
         if: always()
         run: rm -f "$RUNNER_TEMP/client.json"
