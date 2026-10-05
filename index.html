@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>Connect Google Analytics to Claude</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="main">
+  <header class="intro">
+    <h1>Connect Google Analytics to Claude</h1>
+    <p>Follow these steps from top to bottom. This page checks your progress by itself, so you
+      do not need to reload it. It keeps no passwords or keys: your Google sign-in stays on your
+      own Mac.</p>
+  </header>
+
+  <ol class="steps">
+    <li class="step" id="step-download">
+      <h2>Get the Claude extension</h2>
+      <!-- D6 (Reviewer 11:24): ONE switch, MCPB_ON_SITE in app.js, picks the variant. Default
+           (b): the file is sent to you; (a), the download, is turned on only by the Owner's ruling. -->
+      <div id="get-received">
+        <p>Find the file <span class="file">grabmcp-ga4-bridge.mcpb</span> that you received from
+          grabmcp (for example as an email attachment) and save it to your Mac.</p>
+      </div>
+      <div id="get-download" hidden>
+        <p><a class="button" id="download-link" href="grabmcp-ga4-bridge.mcpb" download>Download the extension</a></p>
+      </div>
+      <p class="hint">The file is called <span class="file">grabmcp-ga4-bridge.mcpb</span>.</p>
+    </li>
+
+    <li class="step" id="step-install">
+      <h2>Install it in Claude Desktop</h2>
+      <p>Make sure Claude Desktop is open, then double-click that file; Claude Desktop
+        will show an install window, and you click <strong>Install</strong>.</p>
+    </li>
+
+    <li class="step" id="step-helper">
+      <h2>Let this page find the extension</h2>
+      <p id="helper-status" class="status" role="status" aria-live="polite">Checking whether the extension is running…</p>
+      <p class="hint" id="helper-hint">Chrome may ask whether this site may <strong>access other
+        apps and services on this device</strong> or <strong>devices on your local network</strong>.
+        Click <strong>Allow</strong>. That is how this page talks to the extension on your own
+        Mac; nothing leaves your computer this way.</p>
+    </li>
+
+    <li class="step" id="step-connect">
+      <h2>Connect Google Analytics</h2>
+      <p><button type="button" class="button" id="connect-btn" disabled>Connect Google Analytics</button></p>
+      <p id="connect-status" class="status" role="status" aria-live="polite">This button works once the extension has been found (step 3).</p>
+      <p><button type="button" class="button secondary" id="retry-btn" hidden>Try again</button></p>
+      <p id="signin-fallback" hidden>Your browser blocked the new tab.
+        <a id="signin-link" target="_blank" rel="noopener">Open the Google sign-in page</a></p>
+      <details class="hint">
+        <summary>Google says “Google hasn’t verified this app”?</summary>
+        <p>This is expected for now. On that screen click <strong>Advanced</strong>, then
+          <strong>Go to … (unsafe)</strong>, then choose your Google account and click
+          <strong>Continue</strong> or <strong>Allow</strong>. The app only asks to
+          <em>read</em> your Analytics; it cannot change anything.</p>
+      </details>
+    </li>
+
+    <li class="step" id="step-google">
+      <h2>Check that Google access works</h2>
+      <p id="google-status" class="status" role="status" aria-live="polite">Not connected to Google yet.</p>
+    </li>
+
+    <li class="step" id="step-ask">
+      <h2>Ask Claude about your Analytics</h2>
+      <p>Open Claude Desktop and ask a question about your website, for example:</p>
+      <p class="example" id="example-question">“How many people visited my website in the last 7 days?”</p>
+    </li>
+
+    <li class="step" id="step-claude">
+      <h2>Confirm that Claude read your Analytics</h2>
+      <p id="claude-status" class="status" role="status" aria-live="polite">Waiting for Claude to read your Analytics. This page checks every few seconds.</p>
+    </li>
+  </ol>
+
+  <section class="disconnect" aria-labelledby="disconnect-title">
+    <h2 id="disconnect-title">Disconnect</h2>
+    <p>Removes the saved Google sign-in from this Mac and asks Google to withdraw the access.</p>
+    <p><button type="button" class="button small" id="disconnect-btn" disabled>Disconnect</button></p>
+    <p id="disconnect-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
