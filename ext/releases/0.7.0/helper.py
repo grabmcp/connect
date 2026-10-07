@@ -56,6 +56,13 @@ ALLOWED_ORIGINS = frozenset(
     + ([os.environ["GA4_HELPER_ALLOWED_ORIGIN"]] if os.environ.get("GA4_HELPER_ALLOWED_ORIGIN")
        else []))
 SERVICE = "grabmcp-ga4-helper"
+# Step 3, blocking item (b): the property the site SHOWS must be the one the launcher ALLOWS (F-B12
+# tells the user the connector reads "only the one Google Analytics property shown on the grabmcp
+# website"). The launcher hands the helper its build-time ALLOWED_PROPERTIES here (helper_env); the
+# helper never shows any other property. Not set (the helper run alone) -> no property is shown.
+SHOWN_PROPERTIES = frozenset(p.strip() for p in
+                             os.environ.get("GA4_BRIDGE_ALLOWED_PROPERTIES", "").split(",")
+                             if p.strip())
 VERSION = "1.1.0"
 DEFAULT_PORT = 50812
 # The keychain SERVICE every item of ours is stored under (one constant, so a QA build renames it
@@ -902,12 +909,14 @@ def verify_google_access():
     except Exception:
         return False, "malformed_response", None
     # Minimal identifying metadata only: the property id and name. No report content.
+    # Step 3 (b): the ALLOWED property, wherever it is in the list; none -> no property.
     prop = None
     for acc in d.get("accountSummaries", []):
         for ps in acc.get("propertySummaries", []):
-            prop = {"id": (ps.get("property") or "").split("/")[-1],
-                    "name": ps.get("displayName")}
-            break
+            pid = (ps.get("property") or "").split("/")[-1]
+            if pid in SHOWN_PROPERTIES:
+                prop = {"id": pid, "name": ps.get("displayName")}
+                break
         if prop:
             break
     return True, None, prop
@@ -936,8 +945,18 @@ CALLBACK_RESULT_WAIT_S = 15 + LOGIN_UNLOCK_BOUND + 6 * SEC_BOUND
 
 # 1.1.0 (N-2): the page the browser shows after Google's redirect. HTML, inline style and script
 # only (no external resource). It names the outcome in one line, tries window.close(), and after
-# 300 ms shows one way back: a link to the flow's validated `return_to`, or plain text. NOTHING from
-# the query string is echoed, and the script removes the query from the address bar.
+# 300 ms shows one way back. NOTHING from the query string is echoed, and the script removes the
+# query from the address bar.
+# Step 3 (I3/I4, brief p.8 and p.18): the way back is ALWAYS exactly one link, never plain text: to
+# the flow's validated `return_to`, or, with none, to the site's page + "#return".
+# The site restores the right step when it loads with "#return".
+# Lead decision on FLAG 2 (step 3): the site deploys as the GitHub Pages site of the repo
+# grabmcp/connect (no CNAME; pages.yml copies site/* to the Pages root), so it lives at
+# the path /connect/ of the first built-in origin -- not at the origin root (no literal origin is
+# written here: the qa build's no-release-value scan reads comments too). Used only when no valid return_to
+# arrived (the site always sends one).
+CALLBACK_DEFAULT_RETURN = DEFAULT_ORIGINS[0] + "/connect/#return"
+RETURN_FRAGMENT = "return"
 CALLBACK_TITLES = {
     # AWAITING OWNER (O-1): proposed text, Planner drafting routed by the Reviewer
     "ok": "Signed in with Google",
@@ -958,9 +977,7 @@ def callback_page(outcome, return_to=None):
     flow's stored, already validated URL (never anything from the request)."""
     title = _html_escape(CALLBACK_TITLES.get(outcome, CALLBACK_TITLES["unfinished"]))
     # AWAITING OWNER (O-1): proposed text, Planner drafting routed by the Reviewer ("Return to grabmcp")
-    # AWAITING OWNER (O-1): proposed text, Planner drafting routed by the Reviewer ("return to the grabmcp tab")
-    back = ('<a href="%s">Return to grabmcp</a>' % _html_escape(return_to) if return_to
-            else "return to the grabmcp tab")
+    back = '<a href="%s">Return to grabmcp</a>' % _html_escape(return_to or CALLBACK_DEFAULT_RETURN)
     # AWAITING OWNER (O-1): proposed text, Planner drafting routed by the Reviewer ("<title>grabmcp</title>")
     return ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
@@ -976,7 +993,9 @@ def callback_page(outcome, return_to=None):
 
 def valid_return_to(value, origin):
     """1.1.0 (N-2): `return_to` is kept only if it is an absolute http(s) URL whose origin IS the
-    request's admitted Origin. Anything else is ignored (None), never an error."""
+    request's admitted Origin. Anything else is ignored (None), never an error.
+    Step 3 (I3/I4): the ONLY fragment allowed is "#return" (the site's `<origin><path>#return`);
+    any other fragment, an empty one ("...#"), or a second "#" is refused."""
     if not isinstance(value, str) or not origin or len(value) > 2048 or not value.isascii():
         return None
     if any(c in value for c in "\\\"'<> \t\r\n") or any(ord(c) < 0x20 or ord(c) == 0x7f
@@ -990,6 +1009,8 @@ def valid_return_to(value, origin):
     if u.scheme not in ("http", "https") or not u.netloc or "@" in u.netloc:
         return None
     if "%s://%s" % (u.scheme, u.netloc) != origin:
+        return None
+    if "#" in value and (value.count("#") != 1 or u.fragment != RETURN_FRAGMENT):
         return None
     return value
 
@@ -1031,11 +1052,19 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         q = dict(urllib.parse.parse_qsl(u.query))
         # Only the redirect counts, and only the FIRST one: a browser's /favicon.ico (or any
         # other request) on this port must not overwrite it.
-        if u.path != "/callback" or not (q.get("state") or q.get("error")):
-            return self._reply(404, b"Not found.")
+        redirect = u.path == "/callback" and bool(q.get("state") or q.get("error"))
         with self.box["lock"]:
-            if self.box["result"] is None:
+            # U-19: a flow SUPERSEDED (E2-05) before any redirect arrived keeps its listener until
+            # its own deadline, and only ANSWERS: nothing is recorded, so its code is never
+            # exchanged. Checked and recorded under the one lock, so no redirect slips in after.
+            superseded = self.box["result"] is None and self.box["cancel"].is_set()
+            if redirect and self.box["result"] is None and not superseded:
                 self.box["result"] = q
+        if superseded:
+            return self._reply(200, callback_page("unfinished", self.box.get("return_to")),
+                               "text/html; charset=utf-8")
+        if not redirect:
+            return self._reply(404, b"Not found.")
         # 1.1.0 (N-2): the outcome is DERIVED from the query; no value of it is shown.
         if q.get("error") == "access_denied":
             outcome = "denied"
@@ -1059,7 +1088,8 @@ def start_callback_listener():
     """
     box = {"result": None, "lock": threading.Lock(), "cancel": threading.Event(),
            "state": None, "return_to": None,     # 1.1.0 (N-2): set by /connect/start
-           "done": threading.Event(), "final": None}  # 1.1.0 (C-5): the flow's final outcome
+           "done": threading.Event(), "final": None,  # 1.1.0 (C-5): the flow's final outcome
+           "released": threading.Event()}             # U-19: ends a superseded flow's listener early
     handler = type("_FlowCallbackHandler", (_CallbackHandler,), {"box": box})
     srv = _CallbackServer(("127.0.0.1", 0), handler)     # loopback ONLY, port 0
     srv.box = box
@@ -1087,6 +1117,41 @@ def _stop_callback(srv):
             % CALLBACK_STOP_BOUND)
 
 
+# U-19: listeners of SUPERSEDED flows still answering ("Sign-in didn't finish") until their deadline
+_LINGERING = set()
+
+
+def _linger_callback(srv, end):
+    """U-19: keep a superseded flow's listener until `end` (the flow's own CALLBACK_WAIT_S
+    deadline), then release it with the bounded _stop_callback. Its handler only answers."""
+    def run():
+        srv.box["released"].wait(max(0.0, end - time.time()))
+        _stop_callback(srv)
+        with LOCK:
+            _LINGERING.discard(srv)
+    t = threading.Thread(target=run, daemon=True)
+    srv.linger_thread = t
+    with LOCK:
+        _LINGERING.add(srv)
+    try:
+        t.start()
+    except RuntimeError:
+        with LOCK:
+            _LINGERING.discard(srv)
+        _stop_callback(srv)
+
+
+def _release_lingering():
+    """U-19: at the helper's shutdown, stop every superseded listener now (bounded joins)."""
+    with LOCK:
+        held = list(_LINGERING)
+    for s in held:
+        s.box["released"].set()
+    for s in held:
+        if s.linger_thread.is_alive():
+            s.linger_thread.join(2 * CALLBACK_STOP_BOUND + 1)
+
+
 def complete_flow(srv, state_key, timeout=None):
     """Wait for the callback, then exchange the code. Returns (ok, detail). 1.1.0 (C-5): the
     outcome is also handed to the callback page that may be waiting for it (box "done")."""
@@ -1107,8 +1172,12 @@ def _complete_flow(srv, state_key, timeout=None):
     try:
         while time.time() < end and box["result"] is None and not box["cancel"].is_set():
             time.sleep(0.05)
-        q = box["result"]
-        _stop_callback(srv)
+        with box["lock"]:
+            q = box["result"]
+        if q is None and box["cancel"].is_set():
+            _linger_callback(srv, end)     # U-19: superseded; answers until THIS flow's deadline
+        else:
+            _stop_callback(srv)
     finally:
         # E2-05: the verifier never outlives its flow, whatever the outcome
         with LOCK:
@@ -1233,6 +1302,10 @@ class Handler(BaseHTTPRequestHandler):
     def _public_state(self):
         out = {k: STATE[k] for k in ("helper", "property", "local_credential",
                                      "provider_authorization", "connection_id")}
+        # Step 3 (b): a property recorded earlier (a persisted state) that is not allowed is not shown
+        prop = out["property"]
+        if not (isinstance(prop, dict) and str(prop.get("id")) in SHOWN_PROPERTIES):
+            out["property"] = None
         out["google_access"] = published_access()
         out["keychain"] = keychain_state()
         out["last_flow"] = STATE.get("last_flow")
@@ -1255,8 +1328,10 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "no such path"})
 
     def do_POST(self):
-        if self.path not in ("/connect/start", "/connect/callback-wait", "/disconnect",
-                             "/verify", "/compare", "/shutdown"):
+        # Step 3 (CR3-12/G-5): /connect/callback-wait is no longer admitted. It had no branch here
+        # (an admitted request got NO answer and waited out the client's timeout), no caller and no
+        # test since 0.6.3; it now gets this 404 like any unknown path.
+        if self.path not in ("/connect/start", "/disconnect", "/verify", "/compare", "/shutdown"):
             return self._send(404, {"error": "no such path"})
         bad = self._authorised(paired_only=(self.path in ("/compare", "/shutdown")))
         if bad:
@@ -1648,6 +1723,7 @@ def main():
     log("listening on 127.0.0.1:%d" % srv.server_address[1])
     print(json.dumps({"port": srv.server_address[1]}), flush=True)
     srv.serve_forever()
+    _release_lingering()
     srv.server_close()
     log("stopped")
 

@@ -100,11 +100,12 @@ DRAIN_BOUND = 15.0        # s an old server keeps answering its in-flight calls 
 REPLAY_PREFIX = "grabmcp-launcher-replay-"
 
 # The two Owner-approved texts, verbatim. MSG_B as ruled 2026-10-05 08:54; MSG_A as approved in the
-# GA4 brief v2.0 p.12 (instruction N's verbatim record, ASCII apostrophe; plan 03 v1.2 A-6, D-8).
-MSG_A = ("The connection to Google Analytics was disconnected. Reconnect your Google account on "
-         "the grabmcp website, then ask your question here again. You don't need to reinstall "
-         "the extension or restart Claude Desktop. If it still doesn't work, send a problem "
-         "report to support@grabmcp.com.")
+# GA4 brief p.12 (R13, instruction RVW-INSTRUCTION-20261007-P step 3): three paragraphs separated by
+# a blank line, U+2019 apostrophes (the Reviewer's 21:18 ASCII ruling is withdrawn).
+MSG_A = ("The connection to Google Analytics was disconnected.\n\n"
+         "Reconnect your Google account on the grabmcp website, then ask your question here "
+         "again. You don’t need to reinstall the extension or restart Claude Desktop.\n\n"
+         "If it still doesn’t work, send a problem report to support@grabmcp.com.")
 MSG_B = ("The connection to Google failed. Please restart Claude Desktop. If it still doesn't "
          "work, send a problem report to support@grabmcp.com.")
 
@@ -967,7 +968,9 @@ def helper_env(base_env):
     e.update(GA4_BRIDGE_KEYCHAIN=keychain_path(), GA4_BRIDGE_STATUS=STATUS_PATH,
              GA4_HELPER_STATE=HELPER_STATE_PATH, GA4_BRIDGE_STATE_DIR=STATE_DIR,
              GA4_HELPER_PORT=str(HELPER_PORT),
-             GA4_HELPER_PARENT_WATCH="1")      # 0.6.2 (P2): it stops when we are gone
+             GA4_HELPER_PARENT_WATCH="1",      # 0.6.2 (P2): it stops when we are gone
+             # step 3 (b): the site is shown only the property this launcher allows
+             GA4_BRIDGE_ALLOWED_PROPERTIES=",".join(sorted(ALLOWED_PROPERTIES)))
     c = client_path()
     if c:
         e["GA4_OAUTH_CLIENT_JSON"] = c

@@ -4,11 +4,19 @@
  * the loopback address below (helper contract 1.0; 1.1.0 features are feature-detected). It
  * holds no secret, never receives a token, and never shows the sign-in address it is given.
  *
- * The page is a STAGED journey (BEHAVIOUR-CONTRACT-03, as amended by plan v1.2 §7):
- *   S0 disclose -> S1 install (merged S1/S2) -> S3 found -> S4 before Google -> S5 waiting
- *   -> S6 Google verified -> S7 ask Claude -> S8 Claude verified; failures F1, F3, F4, and
- *   CX (setup cancelled from F3). Each state is one section[data-state] in index.html.
- * N-1: nothing is sent to 127.0.0.1 before the user clicks (S0's two controls, S1's primary).
+ * Instruction P step 3: the views are the approved design's frames, one section[data-state] each:
+ *   S0 = D-p2 (disclose) -> S1 = D-p3 (install) -> PAIR = D-p4 (pair; ready / not found /
+ *   permission denied in its status area) -> S4 = D-p5 (full disclosure) -> Google's screens
+ *   (D-p6, their own tab; "#return" is the fallback) -> S6 = D-p8 (Google verified) -> S7 = D-p9 (ask
+ *   Claude) -> S8 = D-p10 (Claude verified). F3 = D-p7 (4a). F4 is not drawn (brief p.17/p.18).
+ *   RET is the moment after the return while the helper's test call runs (not drawn).
+ * N-1: nothing is sent to 127.0.0.1 before a user click. Detection starts at "Find the helper",
+ * the click the design precedes with its browser-prompt announcement (D-p4).
+ * A-8: the #return load is the user's click on the callback "Return to grabmcp"; within N-1 per
+ * Reviewer ruling 2026-10-07 05:39:54 (A-8). FLAG U-18: #return opened in another browser or after
+ * the permission was revoked is undrawn (Owner to rule).
+ * FLAG R-1: one page with in-page progress; the design's drawn paths (/connect/…) are not built
+ * as routes (brief p.4).
  */
 (function () {
   "use strict";
@@ -25,8 +33,14 @@
   var REQUEST_TIMEOUT_MS = 8000;   // one request may take this long before it counts as failed
   // N-13: the helper's callback window (CALLBACK_WAIT_S = 600) plus a 15 s margin.
   var FLOW_TIMEOUT_MS = 600000 + 15000;
-  var SEARCH_FAIL_MS = 10000;      // contract S2: a network failure persisting 10 s -> F1
+  var SEARCH_FAIL_MS = 10000;      // a network failure persisting 10 s -> "Helper not found"
   var RETURN_TO_SINCE = [1, 1, 0]; // helper version that accepts `return_to` (INTERFACE-03 §3)
+  var RETURN_HASH = "#return";     // the fragment the callback page's return action carries
+
+  // Where the page keeps its place across a reload (p.8 "חזרה אחרי הפרעה", p.17): the tab's own
+  // history entry state. No storage API is used (site check :257 forbids it without an approved
+  // amendment), so a reopen in a NEW tab is not restored (FLAG U-11).
+  var STATE_KEY = "grabmcpView";
 
   var BASE = "http://127.0.0.1:" + HELPER_PORT;
 
@@ -35,10 +49,6 @@
   var CREDENTIAL_STORE_DOWN = { keychain_locked: true, keychain_unavailable: true };
   // AWAITING OWNER (O-1)
   var SIGNIN_NOT_SAVED = "Your Google sign-in couldn’t be saved on this Mac. Try connecting again.";
-  // CR3-4: the store is unreadable right now but the sign-in IS saved; the launcher reads it
-  // with macOS's own prompt at question time, so no new consent is asked for.
-  // AWAITING OWNER (O-1)
-  var SIGNIN_SAVED = "Your Google sign-in is saved on this Mac.";
 
   function signinSaved(s) {
     return !!s && s.local_credential === "present";
@@ -46,31 +56,59 @@
 
   var $ = function (id) { return document.getElementById(id); };
 
-  // Which step (A-4) each state belongs to, in journey order.
-  var STEP_ORDER = ["disclose", "install", "find", "google", "claude"];
-  var STEP_OF = {
-    S0: "disclose", S1: "install", S3: "find", F1: "find",
-    S4: "google", S5: "google", S6: "google", F3: "google", F4: "google", CX: "google",
-    S7: "claude", S8: "claude"
-  };
+  // ------------------------------------------------------------------ the step bar (design)
+  // Labels and looks exactly as each frame draws them. D-p3 draws the short labels; D-p10 draws
+  // no bar at all.
+  var FULL = ["1 · Disclose", "2 · Install", "3 · Pair helper", "4 · Google access",
+    "5 · Claude connection"];
+  var SHORT_S1 = ["1 · Disclose", "2 · Install", "3 · Pair", "4 · Google", "5 · Claude"];
+  var DONE = " — done";
+
+  function bar(view) {
+    // Each entry: [label, look]; looks: done | active | active-ok | active-warn | done-ok | todo
+    var L = FULL;
+    switch (view) {
+      case "S0":
+        return [[L[0], "active"], [L[1], "todo"], [L[2], "todo"], [L[3], "todo"], [L[4], "todo"]];
+      case "S1":
+        L = SHORT_S1;             // FLAG I-1: D-p3 draws the short labels
+        return [[L[0] + DONE, "done"], [L[1], "active"], [L[2], "todo"], [L[3], "todo"], [L[4], "todo"]];
+      case "PAIR":
+        return [[L[0] + DONE, "done"], [L[1] + DONE, "done"], [L[2], "active"], [L[3], "todo"], [L[4], "todo"]];
+      case "S4": case "RET": case "F4":
+        return [[L[0] + DONE, "done"], [L[1] + DONE, "done"], [L[2] + DONE, "done"], [L[3], "active"], [L[4], "todo"]];
+      case "F3":
+        return [[L[0] + DONE, "done"], [L[1] + DONE, "done"], [L[2] + DONE, "done"],
+          [L[3] + " — not granted", "active-warn"], [L[4], "todo"]];
+      case "S6":
+        return [[L[0] + DONE, "done"], [L[1] + DONE, "done"], [L[2] + DONE, "done"],
+          [L[3] + " — verified", "active-ok"], [L[4], "todo"]];
+      case "S7":
+        return [[L[0] + DONE, "done"], [L[1] + DONE, "done"], [L[2] + DONE, "done"],
+          [L[3] + " — verified", "done-ok"], [L[4], "active"]];
+      default:
+        return null;            // FLAG I-2: S8 (D-p10) draws no step bar
+    }
+  }
 
   var state = {
-    view: "S0",          // the current contract state
-    polling: false,      // the SIG-H poll runs (only ever started by a click, N-1)
-    searching: false,    // a "find the extension" search is open (S0/S1/F1 -> S3 or F1)
+    view: "S0",          // the current frame
+    pair: "idle",        // PAIR's status area: idle | searching | ready | notfound | denied
+    polling: false,      // the helper poll runs (only ever started by a click, N-1)
+    searching: false,    // a "find the helper" search is open
     searchStartedAt: 0,
-    installClicked: false,
-    everFound: false,
+    restoreTo: null,     // the frame stored before a reload (p.8 / p.17)
     found: false,        // /health answered "running" to this page on the last check
     lastHealthAt: null,  // when that last successful check finished (ms)
-    version: null,       // /health version, e.g. "1.0.3"
+    version: null,       // /health version, e.g. "1.1.0"
     refused: null,       // /status refused this page (HTTP code), if it did
     status: null,        // the last /status answer
-    flow: null,          // {id, startedAt, done} of the sign-in this page started
+    lastProperty: null,  // U-20: the last property /status named on this connection (D-p9 keeps it)
     flowBusy: false,     // a /connect/start request is in flight
-    failCause: "",       // F4's one cause line
-    claudeBaseline: null, // claude.last_report_at seen when S6 was entered
-    disconnectBusy: false
+    flow: null,          // {id, startedAt} of the sign-in this page started (site tab waits on D-p5)
+    gen: 0,              // CRP-4: bumped when the page leaves D-p5; a late /connect/start answer is dropped
+    statusReqAt: 0,      // CRP-6: when the request behind state.status was sent (ms)
+    failCause: ""        // F4's one cause line
   };
 
   (function applyGetVariant() {
@@ -88,6 +126,30 @@
       $("f1-install-link").removeAttribute("download");
     }
   })();
+
+  // D-p2 "Detected on this computer: macOS". The design is drawn for macOS only.
+  (function detectOs() {
+    var p = "";
+    try {
+      p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+    } catch (e) { p = ""; }
+    // FLAG A-3: only "macOS" is drawn; the non-macOS names are undrawn.
+    var name = /mac/i.test(p) ? "macOS" : /win/i.test(p) ? "Windows" : /linux/i.test(p) ? "Linux" : p;
+    $("detected-os").textContent = name;
+  })();
+
+  // ------------------------------------------------------------------ the place across a reload
+  function remember(view) {
+    try {
+      var o = {};
+      o[STATE_KEY] = view;
+      history.replaceState(o, "", location.pathname + location.search);
+    } catch (e) { /* the page still works, without restore */ }
+  }
+  function remembered() {
+    try { return (history.state && history.state[STATE_KEY]) || null; } catch (e) { return null; }
+  }
+  var loadedAt = Date.now();
 
   // ------------------------------------------------------------------ talking to the helper
   // Every call resolves (never rejects): {network: true} when the helper could not be reached
@@ -118,14 +180,6 @@
     });
   }
 
-  // A short machine word from the helper (e.g. "access_denied") may be shown; anything else
-  // is not echoed, so nothing long or secret-looking ever reaches the screen.
-  function safeWord(v) {
-    // Owner ruling C-5: a word naming the credential store or the system tool is never echoed.
-    return (typeof v === "string" && /^[A-Za-z0-9_.\- ]{1,40}$/.test(v) &&
-      !/keychain|security|credential/i.test(v)) ? v : null;
-  }
-
   function versionAtLeast(v, min) {
     if (typeof v !== "string") { return false; }
     var p = v.split(".");
@@ -137,11 +191,26 @@
     return true;
   }
 
-  // ------------------------------------------------------------------ presentation helpers
-  function say(node, text, kind) {
-    node.textContent = text;
-    node.className = "status" + (kind ? " " + kind : "");
+  // D-p4 "Permission denied": the browser's own record of the user's choice on its local
+  // network prompt. Feature-detected; a browser without it never shows the denied state.
+  function lnaDenied() {
+    if (!navigator.permissions || typeof navigator.permissions.query !== "function") {
+      return Promise.resolve(false);
+    }
+    var names = ["loopback-network", "local-network-access", "local-network"];
+    return Promise.all(names.map(function (n) {
+      try {
+        return navigator.permissions.query({ name: n }).then(function (r) {
+          return !!r && r.state === "denied";
+        }, function () { return false; });
+      } catch (e) { return Promise.resolve(false); }
+    })).then(function (a) {
+      for (var i = 0; i < a.length; i++) { if (a[i]) { return true; } }
+      return false;
+    });
   }
+
+  // ------------------------------------------------------------------ presentation helpers
 
   // The helper and the launcher write "%Y-%m-%dT%H:%M:%S%z" (e.g. +0300); a colon is added so
   // every browser parses it. Numbers are epoch seconds or milliseconds.
@@ -155,7 +224,7 @@
     return (d && !isNaN(d.getTime())) ? d : null;
   }
 
-  // N-11: every proof line carries its time, as in the design ("2 Oct, 19:36").
+  // The design's time form, "2 Oct, 19:36".
   function when(v) {
     var d = toDate(v);
     if (!d) { return null; }
@@ -163,90 +232,80 @@
       hour: "2-digit", minute: "2-digit" });
   }
 
-  function clock(ms) {
-    return new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit",
-      second: "2-digit" });
+  // D-p4's "Checked at [19:31]".
+  function hhmm(ms) {
+    return new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // " at <strong>time</strong>" after a sentence, as the frames bold the time.
+  function atStrong(node, t) {
+    node.textContent = "";
+    if (!t) { return; }
+    node.appendChild(document.createTextNode(" at "));
+    var b = document.createElement("strong");
+    b.textContent = t;
+    node.appendChild(b);
   }
 
   function propertyParts() {
     var prop = state.status && state.status.property;
-    if (!prop || !(prop.name || prop.id)) { return null; }
+    // FLAG U-20 (undrawn state; Owner to rule): when Google access is no longer verified on the same connection (a failed verification records no property), D-p9 (and its Copy example) keeps the property this page already showed; the drawn line and example are unchanged. FLAG U-21: if none was ever named, the existing O-1 fallback texts stay.
+    if (!prop || !(prop.name || prop.id)) {
+      var last = state.lastProperty;
+      if (state.status && state.status.google_access !== "verified" && last && last.cid === state.status.connection_id) {
+        return { name: last.name, id: last.id };
+      }
+      return null;
+    }
     var name = typeof prop.name === "string" ? prop.name : "";
     var id = (typeof prop.id === "string" || typeof prop.id === "number") ? String(prop.id) : "";
+    state.lastProperty = { name: name, id: id, cid: state.status.connection_id };
     return { name: name, id: id };
   }
 
-  function propertyText() {
+  // D-p9 "[Property name] · ID [property ID]", the name in bold.
+  function renderProperty(node) {
+    node.textContent = "";
     var p = propertyParts();
     if (!p) {
       // AWAITING OWNER (O-1)
-      return "The extension has not named the property yet.";
+      node.textContent = "The extension has not named the property yet.";
+      return;
     }
-    return (p.name || "(no name)") + (p.id ? " · ID " + p.id : "");
+    var b = document.createElement("strong");
+    b.textContent = p.name;     // FLAG U-15 (undrawn; Owner to rule): a property without a name leaves the slot empty
+    node.appendChild(b);
+    if (p.id) { node.appendChild(document.createTextNode(" · ID " + p.id)); }
   }
 
   function exampleText() {
     var p = propertyParts();
-    // AWAITING OWNER (O-1)
+    // The frame's text; "my website" when no property is named: AWAITING OWNER (O-1)
     return "How many users visited " + (p && p.name ? p.name : "my website") + " last week?";
   }
 
-  function googleVerifiedLine() {
-    var s = state.status || {};
-    var at = when(s.verification && s.verification.at);
-    // AWAITING OWNER (O-1)
-    return "Google access: verified" + (at ? " at " + at : "") + ".";
-  }
+  // FLAG U-16 (undrawn; Owner to rule): the non-verified Google lines on D-p9/D-p10 are removed.
 
-  function googleText(s) {
-    var ga = s.google_access;
-    if (ga === "verified") { return [googleVerifiedLine(), "ok"]; }
-    // AWAITING OWNER (O-1): this line only
-    if (ga === "not_connected") { return ["Google is not connected yet.", ""]; }
-    if (ga === "unverified") {
-      // AWAITING OWNER (O-1)
-      return ["You connected Google before. The extension is checking that access again; " +
-        "this page continues by itself.", "wait"];
-    }
-    if (ga === "not_verified") {
-      // AWAITING OWNER (O-1)
-      return ["Google did not confirm access to your Analytics just now. Continue to " +
-        "connect Google again.", "bad"];
-    }
-    // Owner ruling C-5: no user text names the credential store; both states read the same.
-    if (CREDENTIAL_STORE_DOWN[ga]) {
-      // AWAITING OWNER (O-1)
-      return signinSaved(s) ? [SIGNIN_SAVED, ""] : [SIGNIN_NOT_SAVED, "bad"];
-    }
-    // AWAITING OWNER (O-1)
-    return ["Google access: unknown (the extension reported “" + (safeWord(ga) || "?") + "”).", "bad"];
+  function googleProvenAt(s) {
+    // D-p10 shows Google access last proven at the time of Claude's report call: a report call
+    // that succeeded is also a Google call. The later of the two times is shown.
+    var v = toDate(s && s.verification && s.verification.at);
+    var c = toDate(s && s.claude && s.claude.last_report_at);
+    if (v && c) { return when(v > c ? v.getTime() : c.getTime()); }
+    return when((v || c) ? (v || c).getTime() : null);
   }
 
   // ------------------------------------------------------------------ rendering
-  function renderSteps() {
-    var active = STEP_OF[state.view];
-    var ai = STEP_ORDER.indexOf(active);
-    for (var i = 0; i < STEP_ORDER.length; i++) {
-      var key = STEP_ORDER[i];
-      var li = $("step-" + key);
-      var isActive = i === ai, isDone = i < ai;
-      li.classList.toggle("active", isActive);
-      li.classList.toggle("done", isDone);
-      li.classList.toggle("todo", i > ai);
-      if (isActive) { li.setAttribute("aria-current", "step"); } else { li.removeAttribute("aria-current"); }
-      $("body-" + key).hidden = !isActive;     // finished and future steps stay collapsed
-      var flag = "";
-      if (isDone) {
-        // AWAITING OWNER (O-1): the step flags
-        flag = (key === "install" && !state.installClicked && !state.everFound) ? "skipped" :
-          (key === "google") ? "verified" : "done";
-      } else if (isActive) {
-        if (state.view === "S6" || state.view === "S8") { flag = "verified"; }
-        else if (state.view === "F3") { flag = "not granted"; }
-        else if (state.view === "F4") { flag = "didn’t finish"; }
-        else if (state.view === "F1") { flag = "not found"; }
-      }
-      $("flag-" + key).textContent = flag ? " — " + flag : "";
+  function renderBar() {
+    var b = bar(state.view);
+    $("stepbar").hidden = !b;
+    if (!b) { return; }
+    for (var i = 0; i < 5; i++) {
+      var li = $("pill-" + (i + 1));
+      li.textContent = b[i][0];
+      li.className = "pill " + b[i][1];
+      if (/^active/.test(b[i][1])) { li.setAttribute("aria-current", "step"); }
+      else { li.removeAttribute("aria-current"); }
     }
   }
 
@@ -255,118 +314,86 @@
     for (var i = 0; i < panels.length; i++) {
       panels[i].hidden = panels[i].getAttribute("data-state") !== state.view;
     }
+    // PAIR's status area: one result at a time; "Find the helper" only before a result.
+    var inPair = state.view === "PAIR";
+    $("pair-ready").hidden = !(inPair && state.pair === "ready");
+    $("pair-notfound").hidden = !(inPair && state.pair === "notfound");
+    $("pair-denied").hidden = !(inPair && state.pair === "denied");
     // Each primary is hidden by its OWN attribute too, so getComputedStyle(button).display is
-    // "none" outside its state (a hidden ancestor alone does not change a child's computed
-    // display). One enabled primary per state (AT-DOM-0).
+    // "none" outside its state. One enabled primary per state (AT-DOM-0).
+    var key = inPair ? "PAIR-" + (state.pair === "searching" ? "idle" : state.pair) : state.view;
     var prim = document.querySelectorAll("[data-owner]");
     for (var j = 0; j < prim.length; j++) {
-      prim[j].hidden = prim[j].getAttribute("data-owner") !== state.view;
+      prim[j].hidden = prim[j].getAttribute("data-owner") !== key;
     }
-    $("connect-btn").disabled = state.flowBusy || !!state.flow;
-    $("restart-btn").disabled = state.flowBusy;
-    $("disconnect-area").hidden = !(state.view === "S6" || state.view === "S8");
-    $("disconnect-btn").disabled = state.disconnectBusy;
-  }
-
-  function searchLine() {
-    // AWAITING OWNER (O-1)
-    return state.searching ? "Looking for the extension on this Mac…" : "";
+    $("find-btn").disabled = state.pair === "searching";
+    $("connect-btn").disabled = state.flowBusy;
   }
 
   function renderTexts() {
     var s = state.status;
 
-    say($("s0-search"), state.view === "S0" ? searchLine() : "", "wait");
-    say($("s1-search"), state.view === "S1" ? searchLine() : "", "wait");
+    // FLAG U-14 (undrawn; Owner to rule): the D-p4 search line is removed.
+    // FLAG U-13 (undrawn; Owner to rule): the D-p5 waiting lines are removed.
 
-    if (state.view === "S3") {
-      // AWAITING OWNER (O-1)
-      say($("s3-proof"), "Found on this Mac, checked at " + clock(state.lastHealthAt || Date.now()) +
-        ". This proves the extension only: Google and Claude are not connected yet.", "ok");
-      if (s && s.google_access && s.google_access !== "not_connected") {
-        var g = googleText(s);
-        say($("s3-google"), g[0], g[1]);
-      } else {
-        say($("s3-google"), "", "");
-      }
-    }
-
-    if (state.view === "F1") {
-      if (state.found && state.refused) {
-        // ADD-11 (N-4): no raw code in user text; the HTTP code goes to the console only.
-        if (typeof console !== "undefined" && console.warn) {
-          console.warn("helper refused /status: HTTP " + state.refused);
-        }
-        // AWAITING OWNER (O-1)
-        $("f1-text").textContent = "The extension is running, but it did not accept this page. " +
-          "Make sure you opened this page from its usual address.";
-      } else {
-        // AWAITING OWNER (O-1)
-        $("f1-text").textContent = "It runs inside Claude Desktop, so Claude Desktop must be " +
-          "open. It may also not be installed yet.";
-      }
-      // AWAITING OWNER (O-1)
-      say($("f1-search"), "This page keeps checking every few seconds.", "wait");
-    }
-
-    if (state.view === "S5") {
-      // AWAITING OWNER (O-1)
-      say($("s5-status"), (state.flow && state.flow.done) ?
-        "Google sign-in finished. Checking access to your Analytics…" :
-        "Waiting for you to finish in the Google tab…", "wait");
+    if (state.view === "PAIR" && state.pair === "ready") {
+      $("pair-checked").textContent = hhmm(state.lastHealthAt || Date.now());
     }
 
     if (state.view === "S6" && s) {
-      var at6 = when(s.verification && s.verification.at);
-      // AWAITING OWNER (O-1)
-      say($("s6-proof"), "Google access verified" + (at6 ? " at " + at6 : "") + ". This proves " +
-        "Google access only; Claude hasn’t used it yet.", "ok");
-      $("s6-property").textContent = propertyText();
+      var t6 = when(s.verification && s.verification.at);
+      atStrong($("s6-at"), t6);
+      $("s6-google-at").textContent = t6 || "—";
     }
 
     if (state.view === "S7") {
       $("example-question").textContent = "“" + exampleText() + "”";
-      $("s7-property").textContent = propertyText();
+      renderProperty($("s7-property"));
       if (s) {
-        var g7 = googleText(s);
-        say($("s7-google"), g7[0], g7[1]);
+        var g7 = $("s7-google");
+        if (s.google_access === "verified") {
+          var t7 = when(s.verification && s.verification.at);
+          g7.textContent = "Verified" + (t7 ? " · " + t7 : "");
+          g7.className = "st-ok";
+        } else {
+          g7.textContent = "";      // FLAG U-16 (undrawn; Owner to rule)
+          g7.className = "st-bad";
+        }
       }
-      // AWAITING OWNER (O-1)
-      say($("s7-claude"), "Claude connection: waiting for your first question in Claude. This " +
-        "page updates by itself when Claude makes its first successful report call.", "wait");
     }
 
     if (state.view === "S8" && s) {
       var c = s.claude || {};
-      var at8 = when(c.last_report_at);
-      // AWAITING OWNER (O-1)
-      say($("s8-proof"), "Claude made a successful report call" + (at8 ? " at " + at8 : "") + ".", "ok");
-      var g8 = googleText(s);
-      say($("s8-google"), g8[0], g8[1]);
+      var t8 = when(c.last_report_at);
+      atStrong($("s8-at"), t8);
+      $("s8-claude-at").textContent = t8 || "—";
+      $("s8-google-at").textContent = googleProvenAt(s) || "—";
+      var g8 = $("s8-google-st");
+      if (s.google_access === "verified") {
+        g8.textContent = "Verified";
+        g8.className = "st-ok";
+      } else {
+        g8.textContent = "";        // FLAG U-16 (undrawn; Owner to rule)
+        g8.className = "st-bad";
+      }
     }
 
     if (state.view === "F4") {
       $("f4-cause").textContent = state.failCause;
     }
-
-    // Lost the helper after it was found, outside the search states.
-    $("helper-lost").hidden = !(state.polling && state.everFound && !state.found &&
-      state.view !== "S0" && state.view !== "S1" && state.view !== "F1" && state.view !== "CX");
   }
 
   function render() {
-    renderSteps();
+    renderBar();
     renderPanels();
     renderTexts();
   }
 
   function go(view) {
     var changed = view !== state.view;
+    if (state.view === "S4" && view !== "S4") { state.gen += 1; }   // CRP-4: leaving D-p5
     state.view = view;
-    if (view === "S6") {
-      var c = (state.status && state.status.claude) || {};
-      state.claudeBaseline = c.verified === true ? c.last_report_at : null;
-    }
+    if (view !== "RET") { remember(view); }
     render();
     if (changed) {
       var h = $("h-" + view);
@@ -374,71 +401,205 @@
     }
   }
 
-  // ------------------------------------------------------------------ the search (SIG-H)
+  function pairShow(result) {
+    state.pair = result;
+    if (state.view !== "PAIR") { go("PAIR"); } else { render(); }
+  }
+
+  // ------------------------------------------------------------------ the search
   function startSearch() {
     state.searching = true;
     state.searchStartedAt = Date.now();
+    state.pair = "searching";
     state.polling = true;
-    render();
+    if (state.view !== "PAIR") { go("PAIR"); } else { render(); }
     tick(false);
-  }
-
-  // S3 shortcut (contract S3; A-1): a verified Google connection skips to S6, or to S8 when
-  // Claude has also made a report call.
-  function shortcut() {
-    var s = state.status;
-    if (!s || s.google_access !== "verified") { return false; }
-    var c = s.claude || {};
-    go(c.verified === true ? "S8" : "S6");
-    return true;
   }
 
   function usable() {
     return state.found && !state.refused && !!state.status;
   }
 
+  // G-2 guard (Reviewer addendum 1; D-p10 MUST NOT "show a stale success as current"; p.17):
+  // only a report call made AFTER this run's Google verification proves the Claude connection.
+  function claudeProven(s) {
+    var c = (s && s.claude) || {};
+    if (c.verified !== true) { return false; }
+    // CRP-5: Google verified now, by a verification made in THIS helper run.
+    if (s.google_access !== "verified" || !s.verification || !s.run_id ||
+        s.verification.run_id !== s.run_id) { return false; }
+    var r = toDate(c.last_report_at);
+    var v = toDate(s.verification && s.verification.at);
+    return !!(r && v && r.getTime() > v.getTime());
+  }
+
+  // A verified Google connection restores the verified state (p.8, p.17): S8 when Claude has
+  // made a report call, else S7 when the page was on S7 before the reload, else S6.
+  function restoreVerified() {
+    var s = state.status;
+    if (!s || s.google_access !== "verified") { return false; }
+    if (claudeProven(s)) { go("S8"); }
+    else if (state.restoreTo === "S7") { go("S7"); }
+    else { go("S6"); }
+    state.restoreTo = null;
+    return true;
+  }
+
+  // FLAG U-9: a refused page or a search that runs past SEARCH_FAIL_MS shows "Helper not found"
+  // (or "Permission denied"), the existing failure handling, with no new copy.
+  function searchFailed() {
+    state.searching = false;
+    return lnaDenied().then(function (denied) {
+      if (state.view === "PAIR" || state.view === "RET") {
+        pairShow(denied ? "denied" : "notfound");
+      }
+    });
+  }
+
   function afterPoll() {
     var v = state.view;
-    if (state.searching && (v === "S0" || v === "S1" || v === "F1")) {
+    if (v === "RET") { return afterReturn(); }
+    if (v === "S4" && state.flow) { return checkFlow(); }
+    if (v === "PAIR") {
       if (usable()) {
+        if (state.pair === "ready") { render(); return; }
         state.searching = false;
-        if (!shortcut()) { go("S3"); }
+        if (!restoreVerified()) { pairShow("ready"); }
         return;
       }
-      if ((state.found && state.refused) ||
-          Date.now() - state.searchStartedAt >= SEARCH_FAIL_MS) {
-        state.searching = false;
-        go("F1");
-        return;
+      if (state.searching) {
+        if (state.found && state.refused) {
+          // N-4: no raw code in user text; the HTTP code goes to the console only.
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn("helper refused /status: HTTP " + state.refused);
+          }
+          return searchFailed();
+        }
+        if (Date.now() - state.searchStartedAt >= SEARCH_FAIL_MS) { return searchFailed(); }
       }
-    } else if (v === "F1") {
-      if (usable()) { if (!shortcut()) { go("S3"); } return; }
-    } else if (v === "S3") {
-      if (usable() && shortcut()) { return; }
-    } else if (v === "S5") {
-      checkFlow();
+      render();
       return;
-    } else if (v === "S6" || v === "S7" || v === "S8") {
+    }
+    if (v === "S6" || v === "S7" || v === "S8") {
       var s = state.status;
-      if (s && s.google_access === "not_connected") { go("S3"); return; }   // e.g. after Disconnect
-      if (s && CREDENTIAL_STORE_DOWN[s.google_access] && !signinSaved(s)) {   // C-5; CR3-4
+      // FLAG U-17: after disconnect, show reconnect step (brief p.8/p.12; Owner to rule)
+      if (s && s.google_access === "not_connected") { state.pair = "ready"; go("PAIR"); return; }
+      if (s && CREDENTIAL_STORE_DOWN[s.google_access] && !signinSaved(s)) {   // C-5
         failGoogle(SIGNIN_NOT_SAVED);
         return;
       }
-      if (v === "S7" && s) {
-        var c = s.claude || {};
-        if (c.verified === true && c.last_report_at !== state.claudeBaseline) { go("S8"); return; }
-      }
+      // FLAG U-12: D-p8 or D-p9 -> D-p10 on a proven report (p.17 + G-2 guard); never from 4a or D-p5.
+      if ((v === "S6" || v === "S7") && s && claudeProven(s)) { go("S8"); return; }
     }
     render();
   }
 
-  // ------------------------------------------------------------------ the sign-in flow
+  // ------------------------------------------------------------------ the return from Google
+  // FLAG U-10: a sign-in that fails, or a test call that fails before D-p8, goes to F4 (the
+  // existing failure handling, no new copy; not drawn in the design).
   function failGoogle(cause) {
     state.flow = null;
-    state.failCause = cause;
     hideFallback();
+    state.failCause = cause;
     go("F4");
+  }
+
+  // Judge the helper's last sign-in (p.8 "המוצר מזהה תוצאה ומחזיר למסע"; p.17). `lf` must be the
+  // flow in question. Returns true when a frame was decided.
+  function judgeFlow(s, lf) {
+    if (!lf || !lf.outcome || lf.outcome === "pending") { return false; }
+    if (lf.outcome === "cancelled") { state.flow = null; hideFallback(); go("F3"); return true; }
+    if (lf.outcome === "superseded") { failSuperseded(); return true; }
+    if (lf.outcome !== "completed") {
+      if (lf.detail === "timeout") {
+        // AWAITING OWNER (O-1)
+        failGoogle("We didn’t hear back from Google in time. Nothing new was connected.");
+      } else if (lf.detail === "keychain_write_failed") {
+        failGoogle(SIGNIN_NOT_SAVED);
+      } else {
+        // AWAITING OWNER (O-1)
+        failGoogle("Google’s answer could not be completed, so nothing new was connected.");
+      }
+      return true;
+    }
+    // completed: wait for the helper's real test call (D-p6: "A real test call runs, then
+    // step 5").
+    // p.8: the verified state and its matching next step; Claude counts only under the G-2 guard.
+    if (s.google_access === "verified") {
+      state.flow = null; hideFallback(); go("S6"); return true;   // UD-5: D-p8; U-12 then advances
+    }
+    if (CREDENTIAL_STORE_DOWN[s.google_access] && !signinSaved(s)) {
+      failGoogle(SIGNIN_NOT_SAVED);
+      return true;
+    }
+    // CRP-1: "not_verified" is final only when it belongs to the CURRENT connection; a stale one
+    // from an earlier attempt means the test call is still running: keep waiting.
+    if (s.google_access === "not_verified" && s.verification &&
+        s.verification.connection_id === s.connection_id) {
+      // AWAITING OWNER (O-1)
+      failGoogle("You signed in, but Google did not confirm access to your Analytics.");
+      return true;
+    }
+    return false;
+  }
+
+  function failSuperseded() {
+      // AWAITING OWNER (O-1)
+      failGoogle("A newer sign-in attempt replaced this one, perhaps from another tab. " +
+        "Nothing new was connected.");
+  }
+
+  function flowTimedOut(startedAt) {
+    if (Date.now() - startedAt <= FLOW_TIMEOUT_MS) { return false; }
+    // AWAITING OWNER (O-1)
+    failGoogle("We didn’t hear back from the Google sign-in. If you closed that tab, try " +
+      "again.");
+    return true;
+  }
+
+  // The site tab waits on D-p5 while Google's screens run in their own tab, and advances by
+  // itself on the result (p.8). D-p5 shows only its drawn content while waiting (U-13).
+  function checkFlow() {
+    var s = state.status;
+    var lf = s && s.last_flow;
+    // CRP-6: a newer sign-in (another tab) replaced this one. Judged only on a /status asked for
+    // after this flow started, so an answer already in flight is never misread.
+    if (s && lf && lf.id && lf.id !== state.flow.id && state.statusReqAt > state.flow.startedAt) {
+      failSuperseded();
+      return;
+    }
+    if (s && lf && lf.id === state.flow.id && judgeFlow(s, lf)) { return; }
+    if (flowTimedOut(state.flow.startedAt)) { return; }
+    render();
+  }
+
+  // The fallback path: the load came through the callback page's return action (the tab could
+  // not close itself). Decide the right frame from /status: never S0 (p.8, p.18).
+  // FLAG U-2: the site side of the callback return (the callback page itself is the helper's).
+  function afterReturn() {
+    if (!usable()) {
+      if (state.found && state.refused) { return searchFailed(); }
+      if (Date.now() - state.searchStartedAt >= SEARCH_FAIL_MS) { return searchFailed(); }
+      render();
+      return;
+    }
+    var s = state.status;
+    var lf = s.last_flow;
+    // This load keeps no flow id (no storage, see STATE_KEY): the helper's latest sign-in is
+    // judged.
+    if (judgeFlow(s, lf)) { return; }
+    if (!lf) {
+      // No sign-in to judge: show what the helper proves.
+      if (s.google_access === "verified") { go("S6"); return; }   // UD-5: D-p8; U-12 then advances
+      go("S4");
+      return;
+    }
+    if (flowTimedOut(loadedAt)) { return; }
+    render();
+  }
+
+  function returnTo() {
+    return location.origin + location.pathname + RETURN_HASH;
   }
 
   function hideFallback() {
@@ -446,98 +607,36 @@
     $("signin-link").removeAttribute("href");
   }
 
-  function checkFlow() {
-    var s = state.status;
-    if (!state.flow) { render(); return; }
-    var lf = s && s.last_flow;
-    if (!state.flow.done && lf && lf.id === state.flow.id && lf.outcome && lf.outcome !== "pending") {
-      if (lf.outcome === "completed") {
-        state.flow.done = true;
-      } else if (lf.outcome === "cancelled") {
-        state.flow = null;
-        hideFallback();
-        go("F3");
-        return;
-      } else if (lf.outcome === "superseded") {
-        // AWAITING OWNER (O-1)
-        failGoogle("A newer sign-in attempt replaced this one, perhaps from another tab. " +
-          "Nothing new was connected.");
-        return;
-      } else if (lf.detail === "timeout") {
-        // CR3-3: the helper publishes a timeout as outcome "failed", detail "timeout".
-        // AWAITING OWNER (O-1)
-        failGoogle("We didn’t hear back from Google in time. Nothing new was connected.");
-        return;
-      } else if (lf.detail === "keychain_write_failed") {
-        // CR3-3: the cause was local (the sign-in could not be stored), not Google.
-        failGoogle(SIGNIN_NOT_SAVED);
-        return;
-      } else {
-        // AWAITING OWNER (O-1)
-        failGoogle("Google’s answer could not be completed, so nothing new was connected.");
-        return;
-      }
-    }
-    if (state.flow.done && s) {
-      if (s.google_access === "verified") {
-        state.flow = null;
-        hideFallback();
-        go("S6");
-        return;
-      }
-      // CR3-4: a saved sign-in is not "couldn't be saved"; S5 keeps waiting for the
-      // verification, and "Start again" (CR3-5) is the way out.
-      if (CREDENTIAL_STORE_DOWN[s.google_access] && !signinSaved(s)) {
-        failGoogle(SIGNIN_NOT_SAVED);
-        return;
-      }
-      if (s.google_access === "not_verified") {
-        // AWAITING OWNER (O-1)
-        failGoogle("You signed in, but Google did not confirm access to your Analytics.");
-        return;
-      }
-    }
-    if (Date.now() - state.flow.startedAt > FLOW_TIMEOUT_MS) {
-      // AWAITING OWNER (O-1)
-      failGoogle("We didn’t hear back from the Google sign-in. If you closed that tab, try " +
-        "again.");
-      return;
-    }
-    render();
-  }
-
-  function returnTo() {
-    return location.origin + location.pathname;    // location.href without query or fragment
-  }
-
+  // D-p5 "Continue to Google" opens Google's screens in their own tab (p.8 "המשך פותח את האישור");
+  // this tab stays on D-p5 and follows the result. The callback page closes itself; when it
+  // cannot, its one return action brings the user back with "#return".
   function startConnect() {
-    if (state.flowBusy || state.flow) { return; }
-    // Open the new tab NOW, inside the click, so the browser does not block it as a pop-up.
+    if (state.flowBusy) { return; }
+    // Open the tab NOW, inside the click, so the browser does not block it as a pop-up. No
+    // placeholder text is written into it (the Reviewer removed "Opening Google…").
+    // FLAG U-19: a re-click of "Continue to Google" while a Google tab is open leaves the earlier tab open; finishing consent there reaches a stopped flow (helper supersedes it). Undrawn; Owner to rule. CRP-2 close() is ineffective with opener=null (measured, probe_close.py).
     var w = null;
     try { w = window.open("", "_blank"); } catch (e) { w = null; }
-    if (w) {
-      try {
-        w.opener = null;
-        // AWAITING OWNER (O-1): both lines
-        w.document.title = "Opening Google…";
-        w.document.body.textContent = "Opening the Google sign-in page…";
-      } catch (e) { /* the tab still works without the placeholder text */ }
-    }
+    if (w) { try { w.opener = null; } catch (e) { /* ignore */ } }
+    var gen = state.gen;                       // CRP-4
     state.flowBusy = true;
+    state.flow = null;
     hideFallback();
-    say($("disconnect-status"), "", "");
-    // AWAITING OWNER (O-1)
-    say($("connect-status"), "Starting the Google sign-in…", "wait");
+    // FLAG U-13 (undrawn; Owner to rule): the "Starting the Google sign-in" line is removed.
     render();
 
-    // Helper >= 1.1.0 takes `return_to` for the callback page's way back; 1.0.3 gets today's
-    // empty body (INTERFACE-03 §3, §4).
+    // Helper >= 1.1.0 takes `return_to`; 1.0.3 gets today's empty body (INTERFACE-03 §3, §4).
     var body = versionAtLeast(state.version, RETURN_TO_SINCE) ?
       JSON.stringify({ return_to: returnTo() }) : "{}";
 
     call("POST", "/connect/start", body).then(function (res) {
       state.flowBusy = false;
-      say($("connect-status"), "", "");
+      if (gen !== state.gen) {
+        // CRP-4: the page left D-p5 (e.g. "Back") while the start was in flight: drop it.
+        if (w) { try { w.close(); } catch (e) { /* ignore */ } }
+        render();
+        return;
+      }
       var d = res.data || {};
       if (res.network || res.status !== 200 || typeof d.authorize_url !== "string" ||
           typeof d.flow_id !== "string") {
@@ -551,25 +650,21 @@
           "The extension couldn’t start the Google sign-in. Try again in a moment.");
         return;
       }
-      state.flow = { id: d.flow_id, startedAt: Date.now(), done: false };
+      state.flow = { id: d.flow_id, startedAt: Date.now() };
       var opened = false;
-      if (w) {
+      if (w && !w.closed) {                    // CRP-3: a tab the user already closed is not "opened"
         try { w.location.replace(d.authorize_url); opened = true; } catch (e) { opened = false; }
       }
       if (!opened) {
+        // FLAG p.17 "מגבלת דפדפן מקבלת חלופת חזרה ברורה": the pop-up was blocked; the existing
+        // fallback link (O-1) opens Google's screens.
         $("signin-link").href = d.authorize_url;
         $("signin-fallback").hidden = false;
       }
-      go("S5");
+      if (!state.polling) { state.polling = true; }
+      render();
+      tick(false);
     });
-  }
-
-  // CR3-5: S5's one secondary. A new /connect/start supersedes the old flow at the helper
-  // (E2-05); the old flow's outcome no longer matches this page's flow id, so it is ignored.
-  function restartConnect() {
-    state.flow = null;
-    hideFallback();
-    startConnect();
   }
 
   function toBeforeGoogle() {
@@ -579,96 +674,15 @@
     go("S4");
   }
 
-  function cancelSetup() {
-    state.flow = null;
-    state.polling = false;
-    if (timer) { clearTimeout(timer); timer = null; }
-    go("CX");
-  }
-
   // ------------------------------------------------------------------ copy the example (N-7)
+  // FLAG backlog: copy feedback not in design D-p9 (Owner 04:48). The copy runs; no result line.
   function copyExample() {
     var text = exampleText();
-    var node = $("copy-status");
-    // AWAITING OWNER (O-1): both lines
-    var okText = "Copied. Paste it into a new conversation in Claude.";
-    var failText = "Couldn’t copy automatically. Select the question above and copy it yourself.";
-    var p = null;
     try {
       if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-        p = navigator.clipboard.writeText(text);     // inside the click (user activation)
+        navigator.clipboard.writeText(text).then(null, function () { /* no visible line */ });
       }
-    } catch (e) { p = null; }
-    if (!p) { say(node, failText, "bad"); return; }
-    p.then(function () { say(node, okText, "ok"); },
-           function () { say(node, failText, "bad"); });
-  }
-
-  // ------------------------------------------------------------------ disconnect
-  // AWAITING OWNER (O-1): every sentence below (inherited from 0.6.3). "under Security,
-  // third-party connections" names Google's own account section, not the `security` tool
-  // (G-4, exempt from C-5 by the lead's ruling); it is marked so the Owner can reword it.
-  function disconnectText(res) {
-    if (res.network) {
-      return ["Could not reach the extension, so nothing was disconnected. Open Claude Desktop " +
-        "and try again.", "bad"];
-    }
-    var d = res.data || {};
-    if (res.status === 503 && (d.error === "keychain_unreadable" ||
-        d.error === "credential_store_unavailable")) {
-      // Owner ruling C-5. AWAITING OWNER (O-1)
-      return ["Nothing was disconnected. Try again in a moment.", "bad"];
-    }
-    if (res.status !== 200) {
-      // N-4: no raw code in user text; the HTTP status and the helper's word go to the
-      // console only.
-      if (typeof console !== "undefined" && console.warn) {
-        console.warn("disconnect answered HTTP " + res.status +
-          (safeWord(d.error) ? ": " + safeWord(d.error) : ""));
-      }
-      // AWAITING OWNER (O-1)
-      return ["Disconnect did not work. Try again in a moment.", "bad"];
-    }
-    var local = d.local_credential;
-    var prov = d.provider_authorization;
-    var parts = [];
-    var full = (local === "absent") && (prov === "revoked" || prov === "none");
-    parts.push(full ? "Disconnected." : "Only partly disconnected.");
-    if (local === "absent") {
-      parts.push("The saved Google sign-in is no longer on this Mac.");
-    } else if (local === "present") {
-      parts.push("The saved Google sign-in could NOT be removed from this Mac.");
-    } else {
-      parts.push("Whether a Google sign-in is still saved on this Mac is unknown.");
-    }
-    if (prov === "revoked") {
-      parts.push("Google confirmed that the access is withdrawn.");
-    } else if (prov === "none") {
-      parts.push("There was no Google access to withdraw.");
-    } else if (prov === "revoke_failed") {
-      // AWAITING OWNER (O-1) (G-4)
-      parts.push("Google did not confirm withdrawing the access; you can remove it yourself in " +
-        "your Google Account, under Security, third-party connections.");
-    } else {
-      parts.push("Google was not asked to withdraw the access.");
-    }
-    parts.push("Claude Desktop and the extension stay installed, and your past Claude " +
-      "conversations are not changed.");
-    return [parts.join(" "), full ? "ok" : "bad"];
-  }
-
-  function startDisconnect() {
-    if (state.disconnectBusy) { return; }
-    state.disconnectBusy = true;
-    // AWAITING OWNER (O-1)
-    say($("disconnect-status"), "Disconnecting…", "wait");
-    render();
-    call("POST", "/disconnect").then(function (res) {
-      state.disconnectBusy = false;
-      var t = disconnectText(res);
-      say($("disconnect-status"), t[0], t[1]);
-      return tick(true);
-    });
+    } catch (e) { /* no visible line */ }
   }
 
   // ------------------------------------------------------------------ the polling loop
@@ -691,6 +705,7 @@
         return null;
       }
       state.version = typeof h.data.version === "string" ? h.data.version : null;
+      var reqAt = Date.now();
       return call("GET", "/status").then(function (s) {
         if (s.network) {
           state.found = false;
@@ -702,12 +717,12 @@
         } else {
           state.refused = null;
           state.status = s.data;
-          state.everFound = true;
+          state.statusReqAt = reqAt;
           state.lastHealthAt = Date.now();
         }
       });
     }).then(function () {
-      afterPoll();
+      return afterPoll();
     }).catch(function () {
       render();
     }).then(function () {
@@ -726,27 +741,67 @@
   // ------------------------------------------------------------------ controls
   $("download-link").addEventListener("click", function () { go("S1"); });   // the download proceeds
   $("received-btn").addEventListener("click", function () { go("S1"); });
-  $("already-btn").addEventListener("click", startSearch);                  // A-1: one click
-  $("installed-btn").addEventListener("click", function () {                // A-2: one click
-    state.installClicked = true;
-    startSearch();
+  // FLAG K-1: "I've finished installing" kept as drawn; the brief p.8 says the product detects
+  // completion. Detection starts at "Find the helper" (Reviewer Q2).
+  $("installed-btn").addEventListener("click", function () {                // D-p3 -> D-p4, no request
+    state.pair = "idle";
+    go("PAIR");
   });
+  $("find-btn").addEventListener("click", startSearch);                     // N-1: the first request
   $("f1-retry-btn").addEventListener("click", startSearch);
-  $("f1-install-link").addEventListener("click", function () {              // A-1: F1's fallback
+  $("denied-retry-btn").addEventListener("click", startSearch);
+  // FLAG U-7 (target: the existing installer download) + FLAG A-4: "Download the installer" also
+  // shows D-p3.
+  $("f1-install-link").addEventListener("click", function () {              // the download proceeds
     state.searching = false;
     go("S1");
   });
   $("continue-btn").addEventListener("click", function () { go("S4"); });
+  // FLAG U-6: "Back" -> the previous frame, D-p4 "Helper ready" (lead 04:29).
+  $("back-btn").addEventListener("click", function () {
+    state.flow = null;
+    hideFallback();
+    state.pair = "ready";
+    go("PAIR");
+  });
   $("connect-btn").addEventListener("click", startConnect);
-  $("restart-btn").addEventListener("click", restartConnect);
+  // FLAG T-CLAUDE-OPEN: "Next: open Claude Desktop" shows D-p9; opening the app is not proven.
   $("next-claude-btn").addEventListener("click", function () { go("S7"); });
   $("copy-btn").addEventListener("click", copyExample);
-  $("f3-retry-btn").addEventListener("click", toBeforeGoogle);
+  $("f3-retry-btn").addEventListener("click", toBeforeGoogle);   // FLAG I-3: 4a "Try again" -> D-p5 (the map arrow)
   $("f4-retry-btn").addEventListener("click", toBeforeGoogle);
-  $("resume-btn").addEventListener("click", toBeforeGoogle);
-  $("cancel-setup-btn").addEventListener("click", cancelSetup);
-  $("disconnect-btn").addEventListener("click", startDisconnect);
+  // No-ops: drawn controls whose target no frame or brief defines (lead interim rules).
+  function noop(e) { if (e && e.preventDefault) { e.preventDefault(); } }
+  $("help-link").addEventListener("click", noop);         // FLAG U-7 (Help)
+  $("get-claude").addEventListener("click", noop);        // FLAG U-7 (Get Claude Desktop)
+  $("steps-link").addEventListener("click", noop);        // FLAG U-7 (Steps for your browser)
+  $("cancel-setup-link").addEventListener("click", noop); // FLAG U-4 (Cancel setup)
+  $("manage-btn").addEventListener("click", noop);        // FLAG K-5 pending Reviewer
 
-  // N-1: no request to 127.0.0.1 here. The poll starts only from a click above.
-  render();
+  // ------------------------------------------------------------------ the first frame
+  // N-1: no request to 127.0.0.1 on a plain load.
+  // A-8: the #return load is the user's click on the callback "Return to grabmcp"; within N-1 per Reviewer ruling 2026-10-07 05:39:54 (A-8). FLAG U-18: #return opened in another browser or after the permission was revoked is undrawn (Owner to rule).
+  if (location.hash === RETURN_HASH) {
+    try { history.replaceState(null, "", location.pathname + location.search); } catch (e) { /* keep */ }
+    state.view = "RET";
+    state.searching = true;
+    state.searchStartedAt = Date.now();
+    state.polling = true;
+    render();
+    tick(false);
+  } else {
+    // FLAG K-2: no detection before a click (N-1), so an active install never skips the
+    // download on D-p2. FLAG U-11: a reload restores the verified state at the first click.
+    var last = remembered();
+    if (last === "S1") {
+      state.view = "S1";
+    } else if (last && last !== "S0") {
+      // A reload or reopen after the install: the pair frame, whose click restores the
+      // verified state (p.8, p.17), at the first click N-1 allows.
+      state.view = "PAIR";
+      state.pair = "idle";
+      state.restoreTo = last;
+    }
+    render();
+  }
 })();

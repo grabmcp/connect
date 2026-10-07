@@ -18,7 +18,7 @@ version number** — the version is the only handle a user has when asked to go 
 
 ---
 
-## 0.7.0 — 2026-10-06 (uv route only) — QA SEAL, re-cut after the Owner's wording pass (O-1)
+## 0.7.0 — 2026-10-06, re-cut 2026-10-07 (uv route only) — QA SEAL; re-cut again as 0.7.0 (same version) after the Owner's wording pass (O-1)
 
 **MINOR: the GA4 UX sprint build (plan 03 v1.2 + ERRATA C-1…C-5; instruction RVW-INSTRUCTION-20261006-O).**
 Helper 1.1.0. The new site and the new Claude-side texts are AWAITING OWNER (O-1): every user string is marked.
@@ -26,12 +26,21 @@ Built only by the GitHub Actions workflow in grabmcp/connect or by `build-0.7.0.
 
 | artifact | sha256 |
 |---|---|
-| `helper.py` (helper 1.1.0) | `c1362af4f459412779cc559bc0df6e385daaeb8feed1569c84a50d14bc4706d4` |
-| `launcher.py` | `3539107760f6562b5d201d4a8f658ed623a11eff668b464af68721fd2bfec412` |
+| `helper.py` (helper 1.1.0) | `79edfb3fd1d851218f732f53e576f37680c73d676defe1b213974cd7b8a11698` |
+| `launcher.py` | `43600d5150b32aab5d01feaefa4c41be8346ca343dfe3ad3d672d4b5f43b12b7` |
 | `manifest.json` (0.7.0) | `c688d7fa674486dd627c7ac19b03ace78ce3123ff55696d4ac4d06b4c6cb6fb5` |
 | `build-0.7.0.py` | `7aed9fceea0ac4bab8838e2ac2d0829b90f1ded00ac0459b8b1da1c3814da5f5` |
 
 Google's server tree is unchanged: `SERVER-TREE.sha256` is carried from 0.6.3, and all 14 files match.
+
+**Re-cut 2026-10-07 (instruction RVW-INSTRUCTION-20261007-P, the build conformed to the Owner-approved design):**
+the version stays 0.7.0 (Reviewer 23:46:01; 0.7.0 never shipped). `helper.py` and `launcher.py` are replaced by the
+bytes the final Tester run proved (Reviewer 07:15:07: released bytes = tested bytes); `manifest.json`,
+`build-0.7.0.py`, `helper_compare.py` and the requirements are byte-unchanged. Changes in those bytes: MSG_A
+exactly as brief p.12 (U+2019, three paragraphs); one allowed property handed to the helper; the callback
+page always offers one return to `/connect/#return`; a superseded sign-in's callback answers "Sign-in didn't
+finish" until its own deadline and never exchanges its code (U-19); only the first redirect counts.
+Evidence: `operations/20261006-p2-ga4-ux-sprint/build-03/EXE-CONFORMANCE-REPORT-03-P.md`.
 **Approver:** pending. The Reviewer decides at the build-03 PR gate; the merge is the Owner's (O-3).
 
 1. **Callback and return (N-2, N-13):** `POST /connect/start` takes an optional `return_to`, kept only if its origin
