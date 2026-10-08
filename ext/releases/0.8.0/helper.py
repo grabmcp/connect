@@ -539,6 +539,12 @@ def refresh_token_set(value):
 
 _STORE_MUTEX = threading.Lock()
 ORPHAN_WAIT_S = 600.0       # CR3-1: how long a late-store cleanup waits for a readable keychain
+# MD-3 FR-2: a reconcile that could not run at start (keychain locked, or a launcher read pending) is
+# OWED and re-attempted: by a bounded loop and by /status. Single flight; never on a locked keychain.
+_RECON = {"owed": False, "disconnected": False, "next": 0.0}
+_RECON_LOCK = threading.Lock()
+RECON_RETRY_S = 2.0
+RECON_WAIT_S = ORPHAN_WAIT_S
 
 
 def _abandoned_proc():
@@ -769,10 +775,11 @@ _LAST_VERIFY_ERR = {"err": None}
 
 
 def access_reason(err):
-    """"revoked_or_unrenewable" | "transient" | "unknown" | None for one error word.
+    """"revoked_or_unrenewable" | "transient" | "org_blocked" | "unknown" | None for one error word.
       invalid_grant                                   -> revoked_or_unrenewable
       unreachable / unreachable_*, http_5xx, http_429,
       a timeout                                       -> transient
+      any word containing admin_policy_enforced       -> org_blocked (round 3, INTERFACE-05 §8.1)
       no_credential                                   -> None (not connected)
       anything else (http_403, refresh_malformed ...) -> unknown
     A failure naming admin_policy_enforced is NEVER transient."""
@@ -782,7 +789,7 @@ def access_reason(err):
         return "unknown"
     low = err.lower()
     if ADMIN_POLICY in low:
-        return "unknown"
+        return "org_blocked"
     if low == "invalid_grant":
         return "revoked_or_unrenewable"
     if (low == "unreachable" or low.startswith("unreachable_") or low == "http_429"
@@ -923,16 +930,22 @@ def answer_success(evs, access):
 # LATEST tools/list event says tools_ok). A request alone, an old success or a dead session never counts.
 LIFECYCLE_KINDS = ("mcp_initialize_ok", "mcp_initialized", "mcp_tools_list")
 ALIVE_CACHE_S = 2.0
-_ALIVE = {}                        # (pid, start) -> (alive, checked_at); a DEAD process stays dead
+_ALIVE = {}                        # (pid, start) -> (alive, checked_at, pid_gone)
 _ALIVE_LOCK = threading.Lock()
+# MD-3 FR-1: ps renders lstart in the LOCAL zone and the locale's words; a process identity must not
+# change when the Mac's time zone or language does. Every start-time read pins both.
+PS_ENV = {"TZ": "UTC0", "LC_ALL": "C"}
+FALSE_RECHECK_S = 60.0             # MD-3 D2: a start MISMATCH is re-checked after this long
 
 
-def proc_start(pid):
+def proc_start(pid, legacy=False):
     """The launcher's rule, same three answers: None (could not find out), "" (the pid is gone),
-    or its start time as `ps -o lstart=` prints it."""
+    or its start time as `ps -o lstart=` prints it -- MD-3 FR-1: in UTC with the C locale; legacy=True
+    reproduces the pre-MD-3 inherited rendering, ONLY to compare a record written by older code."""
     try:
         r = subprocess.run(["/bin/ps", "-p", str(int(pid)), "-o", "lstart="],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=5,
+                           env=None if legacy else PS_ENV)
     except Exception:
         return None
     if r.returncode != 0:
@@ -941,7 +954,11 @@ def proc_start(pid):
 
 
 def process_alive(pid, start):
-    """True | False | None (unknown) for the process (pid, recorded start time)."""
+    """True | False | None (unknown) for the process (pid, recorded start time). MD-3 FR-1: the
+    record is compared with the pinned UTC rendering and, for a legacy local-time record written by
+    older code, with the inherited rendering. A False is cached for good ONLY when ps says the pid is
+    GONE (a reused pid never brings back the same start); a start mismatch is re-checked after
+    FALSE_RECHECK_S; a True after ALIVE_CACHE_S."""
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0 or not isinstance(start, str) \
             or not start:
         return False
@@ -949,16 +966,24 @@ def process_alive(pid, start):
     now = time.time()
     with _ALIVE_LOCK:
         hit = _ALIVE.get(key)
-        if hit is not None and (hit[0] is False or now - hit[1] < ALIVE_CACHE_S):
-            return hit[0]
+        if hit is not None:
+            alive, at, gone = hit
+            if gone or now - at < (ALIVE_CACHE_S if alive else FALSE_RECHECK_S):
+                return alive
     st = proc_start(pid)
     if st is None:
         return None
-    alive = st == start
+    gone = st == ""
+    alive = not gone and st == start
+    if not alive and not gone:
+        loc = proc_start(pid, legacy=True)      # a legacy local-time record (older code)
+        if loc is None:
+            return None
+        alive = loc == start
     with _ALIVE_LOCK:
         if len(_ALIVE) > 512:
             _ALIVE.clear()
-        _ALIVE[key] = (alive, now)
+        _ALIVE[key] = (alive, now, gone)
     return alive
 
 
@@ -973,8 +998,10 @@ def claude_loaded(evs=None):
         if kind not in LIFECYCLE_KINDS or not isinstance(sid, str) or not sid:
             continue
         s = sessions.setdefault(sid, {"pid": e.get("pid"), "pid_start": e.get("pid_start"),
+                                      "pid_start_utc": e.get("pid_start_utc"),   # MD-3 FR-1
                                       "steps": {}, "consistent": True})
-        if (e.get("pid"), e.get("pid_start")) != (s["pid"], s["pid_start"]):
+        if (e.get("pid"), e.get("pid_start"), e.get("pid_start_utc")) != (
+                s["pid"], s["pid_start"], s["pid_start_utc"]):
             s["consistent"] = False          # one session id, two processes: never counted
         s["steps"][kind] = e                 # the LATEST event of each kind
     best = None
@@ -991,7 +1018,8 @@ def claude_loaded(evs=None):
         cand = (times[done], steps[LIFECYCLE_KINDS[done]].get("at"), s)
         if best is not None and best[0] >= cand[0]:
             continue
-        if process_alive(s["pid"], s["pid_start"]) is True:
+        utc = s["pid_start_utc"]                 # MD-3 FR-1: the zone-free record when present
+        if process_alive(s["pid"], utc if isinstance(utc, str) and utc else s["pid_start"]) is True:
             best = cand
     if best is None:
         return {"ok": False, "at": None}
@@ -1257,7 +1285,10 @@ def _new_flow(flow_id, sha, return_to, origin, tab, started_at=None, status="pen
             "status": status, "result": None, "arrived": threading.Event(),
             "cancel": threading.Event(), "done": threading.Event(),
             "keep_until": t0 + CALLBACK_WAIT_S, "location": flow_location(return_to, flow_id),
-            "claude": None}
+            "claude": None,
+            # D4 M-b (a): the setup browser this flow was started from -- an allow-listed bundle id
+            # of WP-H4's list, or None. Memory only.
+            "browser": None}
 
 
 def _prune_flows_locked():
@@ -1387,7 +1418,9 @@ def _match_interrupted(flow):
     if first:
         pending_record_remove(flow["flow_id"])
         publish_interrupted(flow["flow_id"])
-        open_handoff(flow.get("origin"))
+        # D4 M-b condition 2 (plan:132): "the interrupted flow gives up tab ownership, so the old Google
+        # tab stands down when it later lands" -- so its landing opens NO hand-off; it claims only by
+        # the ordinary rule (it owns only if no other tab does, e.g. after a hard kill with no M-b page)
         log("a redirect for a flow of a previous run arrived; answered, nothing exchanged")
 
 
@@ -1541,6 +1574,16 @@ OWNER_STALE_S = 15.0
 HANDOFF_S = 120.0
 _OWNER = {"tab": None, "origin": None, "seen": 0.0}
 _HANDOFF = {"origin": None, "until": 0.0}
+# Round 3 (CR5-23 (b), INTERFACE-05 §8.4): the re-front nonce. refront_once mints it per re-front and
+# opens the page with "&rf=<rf>"; while this window is open (OWNER_STALE_S) ownership goes ONLY to a
+# /status claim from that origin carrying the same rf (hmac.compare_digest). Memory only, never logged
+# or persisted; cleared when claimed, when it expires, or when a new sign-in starts.
+RF_RE = re.compile(r"[A-Za-z0-9_-]{22,32}")
+_RF = {"value": None, "origin": None, "until": 0.0}
+
+
+def _rf_clear_locked():
+    _RF.update(value=None, origin=None, until=0.0)
 _SEEN_TABS = {}
 # FX-12 (CR5-3): tab ids that RELEASED ownership (POST /release by the owner), the last RELEASED_KEEP.
 # A /status the departing page sent just before its beacon may land after it; it must not make the
@@ -1578,18 +1621,36 @@ def owner_exists_locked(now=None):
                                     or now - _OWNER["seen"] <= OWNER_STALE_S)
 
 
-def claim_owner_locked(tab, origin, start=False):
+def claim_owner_locked(tab, origin, start=False, rf=None):
     """Called under LOCK for a granted request carrying `tab`. `start`: a /connect/start that passed
-    the not_owner check -- the tab that starts a sign-in owns it."""
+    the not_owner check -- the tab that starts a sign-in owns it. `rf`: the re-front nonce the page
+    sent on its first claim (round 3), or None."""
+    now = time.time()
+    if _RF["value"] is not None and now >= _RF["until"]:
+        _rf_clear_locked()                                  # the re-front window expired
     if not tab or origin not in ALLOWED_ORIGINS or tab in _RELEASED:      # FX-12: never re-claims
         return
-    now = time.time()
     fresh = tab not in _SEEN_TABS
     _SEEN_TABS[tab] = now
     if len(_SEEN_TABS) > 256:
         for k in sorted(_SEEN_TABS, key=_SEEN_TABS.get)[:128]:
             del _SEEN_TABS[k]
     cur = _OWNER["tab"]
+    if _RF["value"] is not None:
+        # round 3: the re-front window. ONLY the matching rf (from the re-front's origin) takes
+        # ownership; a wrong or replayed rf counts as none; the owner keeps refreshing; a new sign-in
+        # ends the window (it supersedes the re-fronted flow's page)
+        if start:
+            _rf_clear_locked()
+        elif (isinstance(rf, str) and origin == _RF["origin"]
+              and hmac.compare_digest(rf.encode(), _RF["value"].encode())):
+            _rf_clear_locked()
+            _OWNER.update(tab=tab, origin=origin, seen=now)
+            return
+        else:
+            if cur == tab:
+                _OWNER["seen"] = now
+            return
     if cur == tab:
         _OWNER["seen"] = now
         return
@@ -1776,7 +1837,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _public_state(self, tab=None):
+    def _public_state(self, tab=None, rf=None):
         out = {k: STATE[k] for k in ("helper", "property", "local_credential",
                                      "provider_authorization", "connection_id")}
         # Step 3 (b): a property recorded earlier (a persisted state) that is not allowed is not shown
@@ -1785,6 +1846,12 @@ class Handler(BaseHTTPRequestHandler):
             out["property"] = None
         out["google_access"] = published_access()
         out["keychain"] = keychain_state()
+        # MD-3 FR-2 (K5): an OWED reconcile is re-attempted off this request thread once the keychain
+        # reads unlocked (the status just read, no `security` here), at most once per RECON_RETRY_S
+        if _RECON["owed"] and (KEYCHAIN_PW or out["keychain"] == "unlocked") \
+                and time.time() >= _RECON["next"]:
+            _RECON["next"] = time.time() + RECON_RETRY_S
+            threading.Thread(target=reconcile_attempt, daemon=True).start()
         out["last_flow"] = STATE.get("last_flow")
         v = STATE["verification"]
         out["verification"] = ({k: v.get(k) for k in ("connection_id", "run_id", "at")}
@@ -1808,7 +1875,7 @@ class Handler(BaseHTTPRequestHandler):
         # `tab` is a claim (made here, before the answer)
         origin = self.headers.get("Origin")
         with LOCK:
-            claim_owner_locked(tab, origin)
+            claim_owner_locked(tab, origin, rf=rf)
             out["owner"] = owner_view_locked(tab)
         return out
 
@@ -1825,11 +1892,13 @@ class Handler(BaseHTTPRequestHandler):
             if bad:
                 return self._send(bad[0], {"error": bad[1]})
             try:
-                tab = valid_tab(dict(urllib.parse.parse_qsl(
-                    urllib.parse.urlsplit(self.path).query)).get("tab"))
+                qs = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query))
+                tab = valid_tab(qs.get("tab"))
+                rf = qs.get("rf") if isinstance(qs.get("rf"), str) and RF_RE.fullmatch(qs["rf"]) \
+                    else None                       # round 3: the re-front nonce (never logged)
             except Exception:
-                tab = None
-            return self._send(200, self._public_state(tab))
+                tab = rf = None
+            return self._send(200, self._public_state(tab, rf))
         return self._send(404, {"error": "no such path"})
 
     def _read_body(self):
@@ -1971,11 +2040,14 @@ class Handler(BaseHTTPRequestHandler):
                     _PENDING[state_key] = {"verifier": verifier, "redirect": redirect,
                                            "at": time.time()}
                     STATE["last_flow"] = {"id": flow_id, "outcome": "pending", "detail": None}
+                    if tab is None:
+                        _rf_clear_locked()           # MD-1 (CR5-26): a start without a tab ends it too
                     claim_owner_locked(tab, origin, start=True)
             if refused:
                 return self._send(409, {"error": "not_owner"})
             pending_record_add(flow)       # CH-3: before the URL leaves, so a restart can answer
             note_claude_for_flow(flow)     # WP-H3: whose Claude Desktop this flow runs under
+            note_setup_browser(flow, self)   # D4 M-b (a): the polling peer's allow-listed browser
             url = AUTH_URI + "?" + urllib.parse.urlencode({
                 "client_id": CLIENT_ID, "redirect_uri": redirect,
                 "response_type": "code", "scope": SCOPE, "state": state_key,
@@ -1989,6 +2061,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/verify":
             ok, err, prop = verify_google_access()
             record_verification(ok, prop, err)
+            if not ok and err == "no_credential":
+                # MD-2 (F-OB-1): the keychain ANSWERED that no credential exists (access_token's
+                # kind == "absent"; an unreadable keychain returns its own word, never this one), so
+                # the honest state is "not connected", not a failed verification
+                # CR5a-1: the same keys state_load and _run_flow clear for an absent credential
+                with LOCK:
+                    STATE["google_access"] = "not_connected"
+                    STATE["local_credential"] = "absent"
+                    STATE["connection_id"] = None
+                    STATE["verification"] = None
             state_save()
             # "Google access verified" says NOTHING about Claude (clarification 7).
             access = published_access()
@@ -1999,6 +2081,10 @@ class Handler(BaseHTTPRequestHandler):
                                     "google_access_reason": google_access_reason(access)})
 
         if self.path == "/disconnect":
+            # MD-3 FR-2 (K6, D4): a /disconnect -- refused or not -- means this run never restores a
+            # credential from the keychain by itself (the reconcile re-checks this at apply time)
+            _RECON["disconnected"] = True
+            _RECON["owed"] = False
             # F5: TWO SEPARATE STATES. The local copy and the provider-side authorization
             # are different facts and are reported as such. "still connected" must never be
             # shown once the local secret is gone, and a refused revoke must not be reported
@@ -2098,10 +2184,20 @@ def reverify_after_restart():
 # claude_pid_start, at} -- and exits. No cause is written at shutdown: at the NEXT start the record
 # gets cause "claude_closed" ONLY if the recorded Claude Desktop process is gone (C-11); otherwise
 # (the extension alone was disabled, updated or restarted) no cause is published. Either way that
-# flow's last_flow becomes "interrupted". M-b (opening the browser on quit) is NOT built (gate §C).
+# flow's last_flow becomes "interrupted".
+# D4 M-b (released by the Reviewer, gate 2026-10-08 06:43:05; PLAN-05 §3.4, plan:129-135): within the
+# same bound, and ONLY for a pending flow matched by id whose setup browser was recorded at
+# /connect/start and is on WP-H4's allow-list, the handler also runs
+#   ["/usr/bin/open", "-b", <that browser>, <the pending record's return_to>#return=<flow_id>]
+# (no shell), so Interrupted -- the NEUTRAL variant, no cause is claimed at SIGTERM (gate B.8) --
+# appears in the setup browser while the helper is down. It persists {flow_id, bundle, url, at}
+# (non-secret) so the restarted helper can bring that page to the front once more (condition 3).
 CLAUDE_BUNDLE_ID = "com.anthropic.claudefordesktop"
 SHUTDOWN_RECORD_PATH = os.path.join(os.path.dirname(os.path.abspath(STATE_PATH)),
                                     "shutdown-record.json")
+MB_RECORD_PATH = os.path.join(os.path.dirname(os.path.abspath(STATE_PATH)), "interrupted-open.json")
+MB_RECORD_KEYS = ("flow_id", "bundle", "url", "at")
+_REFRONT = {"v": None}             # {flow_id, bundle, url} restored at start, for condition 3
 SHUTDOWN_RECORD_KEYS = ("flow_id", "claude_pid", "claude_pid_start", "at")
 SIGTERM_BOUND_S = 1.5
 PARENT_WALK_MAX = 16
@@ -2123,7 +2219,8 @@ def proc_parent(pid):
     """(ppid, start) of `pid` from ONE `ps` call, or None."""
     try:
         r = subprocess.run(["/bin/ps", "-p", str(int(pid)), "-o", "ppid=,lstart="],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=5,
+                           env=PS_ENV)                  # MD-3 FR-1: the start in UTC, C locale
     except Exception:
         return None
     parts = r.stdout.strip().split(None, 1) if r.returncode == 0 else []
@@ -2202,6 +2299,22 @@ def find_claude_process(first=None):
     return found
 
 
+def note_setup_browser(flow, handler):
+    """D4 M-b (a): the setup browser of this flow -- the process owning THIS request's peer socket
+    (WP-H4's lsof read, done now while the connection is open; LSOF_BOUND_S), mapped by WP-H4's
+    peer -> bundle walk (off the request thread) and kept only if allow-listed."""
+    if handler.headers.get("Origin") not in ALLOWED_ORIGINS:
+        return
+    pid = peer_owner_pid(handler.client_address[1])
+    if not pid:
+        return
+
+    def run():
+        b = browser_bundle_of_pid(pid)
+        flow["browser"] = b if b in BROWSER_BUNDLES else None
+    threading.Thread(target=run, daemon=True).start()
+
+
 def note_claude_for_flow(flow):
     """At /connect/start, off the request thread: whose Claude Desktop this flow runs under (once per
     helper process; the parent chain does not change while this helper lives)."""
@@ -2251,25 +2364,86 @@ def write_shutdown_record():
     return rec
 
 
+def mb_url_valid(url, flow_id):
+    """D4: an M-b URL is <an allowed origin's validated return_to, or the site's page> followed by
+    EXACTLY "#return=<flow_id>" or (round 3, N-3) "#return=<flow_id>&rf=<22-32 of [A-Za-z0-9_-]>"."""
+    if not isinstance(url, str) or not isinstance(flow_id, str) or "#" not in url:
+        return False
+    base, frag = url.split("#", 1)
+    plain = RETURN_FRAGMENT + "=" + flow_id
+    if frag != plain and not (frag.startswith(plain + "&rf=")
+                              and RF_RE.fullmatch(frag[len(plain) + 4:])):
+        return False
+    if base + "#" + RETURN_FRAGMENT == CALLBACK_DEFAULT_RETURN:
+        return True
+    try:
+        u = urllib.parse.urlsplit(base)
+    except ValueError:
+        return False
+    origin = "%s://%s" % (u.scheme, u.netloc)
+    return origin in ALLOWED_ORIGINS and valid_return_to(base + "#" + RETURN_FRAGMENT, origin) is not None
+
+
+def mb_open_on_shutdown(rec, deadline):
+    """D4 M-b (b), run inside the SIGTERM bound. Only for the pending flow the shutdown record names,
+    matched by id to the ACTIVE flow and to its pending-flow record, with an allow-listed setup
+    browser. Returns what it did (a fixed word)."""
+    if not rec:
+        return "no_pending_flow"
+    got = LOCK.acquire(timeout=0.25)
+    try:
+        f = _ACTIVE_FLOW.get("flow")
+        bundle = f.get("browser") if f is not None and f["flow_id"] == rec["flow_id"] else None
+    finally:
+        if got:
+            LOCK.release()
+    if bundle not in BROWSER_BUNDLES:
+        return "no_setup_browser"
+    r = next((x for x in read_pending_records() if x["flow_id"] == rec["flow_id"]), None)
+    if r is None:
+        return "no_pending_record"
+    url = flow_location(r["return_to"], r["flow_id"])
+    if not mb_url_valid(url, r["flow_id"]):
+        return "bad_url"
+    try:
+        _write_json_0600(MB_RECORD_PATH, {"flow_id": r["flow_id"], "bundle": bundle, "url": url,
+                                          "at": _now_iso()}, ".interrupted-open.")
+    except OSError:
+        pass                                  # the open still runs; only the re-front is lost
+    left = deadline - time.time()
+    if left < 0.05:
+        return "no_time"
+    try:
+        p = subprocess.run([OPEN_BIN, "-b", bundle, url], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=left)
+        return "opened" if p.returncode == 0 else "open_failed"
+    except subprocess.TimeoutExpired:
+        return "open_timeout"
+    except Exception:
+        return "open_failed"
+
+
 def _on_sigterm(signum, frame):
-    """Bounded: the record is written on its own thread, joined for at most SIGTERM_BOUND_S; then
-    the process exits whatever happened."""
+    """Bounded: the record (and D4's M-b open) run on their own thread, joined for at most
+    SIGTERM_BOUND_S; then the process exits whatever happened."""
     box = {}
+    deadline = time.time() + SIGTERM_BOUND_S - 0.05
 
     def run():
         try:
             box["rec"] = write_shutdown_record()
+            box["mb"] = mb_open_on_shutdown(box["rec"], deadline)
         except Exception as exc:
             box["err"] = type(exc).__name__
     t = threading.Thread(target=run, daemon=True)
     t.start()
     t.join(SIGTERM_BOUND_S)
     rec = box.get("rec")
-    log("stopping: SIGTERM%s" % (
+    log("stopping: SIGTERM%s%s" % (
         "; the pending sign-in %s was recorded" % rec["flow_id"] if rec else
         "; the shutdown record could not be written (%s)" % box["err"] if "err" in box else
         "; the shutdown record did not finish within %.1f s" % SIGTERM_BOUND_S if t.is_alive()
-        else ""))
+        else "", "; setup browser: %s" % box["mb"] if rec and "mb" in box else ""))
     os._exit(0)
 
 
@@ -2308,15 +2482,43 @@ def consume_shutdown_record():
     return rec["flow_id"], cause
 
 
+def consume_mb_record():
+    """D4: the M-b record of the previous run ({flow_id, bundle, url, at}), validated, or None. It is
+    removed either way. Only an allow-listed bundle, a valid M-b URL and a record within
+    CALLBACK_WAIT_S count."""
+    try:
+        with open(MB_RECORD_PATH, encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        rec = None
+    try:
+        os.unlink(MB_RECORD_PATH)
+    except OSError:
+        pass
+    if not isinstance(rec, dict) or set(rec) != set(MB_RECORD_KEYS):
+        return None
+    t = _iso_epoch(rec["at"])
+    if (rec["bundle"] not in BROWSER_BUNDLES or not isinstance(rec["flow_id"], str)
+            or not _FLOW_ID_RE.fullmatch(rec["flow_id"]) or not mb_url_valid(rec["url"], rec["flow_id"])
+            or t is None or time.time() - t > CALLBACK_WAIT_S):
+        return None
+    return {k: rec[k] for k in ("flow_id", "bundle", "url")}
+
+
 def restore_after_restart():
     """WP-H2 + WP-H3 at start: restore the pending-flow records, then publish the interrupted flow --
     the one the shutdown record names (with its cause, if shown), else the newest unexpired record."""
     recs = restore_pending_flows()
     sd = consume_shutdown_record()
+    mb = consume_mb_record()
     if sd is not None:
         publish_interrupted(sd[0], sd[1])
         log("the previous run ended during a sign-in; it is published as interrupted%s"
             % (" (Claude Desktop had quit)" if sd[1] else ""))
+        if mb is not None and mb["flow_id"] == sd[0]:
+            _REFRONT["v"] = mb                 # D4 condition 3: re-front once, on first readiness
     elif recs:
         publish_interrupted(recs[-1]["flow_id"])
         log("the previous run ended during a sign-in (no shutdown record); published as interrupted")
@@ -2336,7 +2538,9 @@ def restore_after_restart():
 #   * The URL: <origin>/connect/#ready=<run_id>, plus "&owner=1" only when an owner tab exists. The
 #     argv is a LIST given to /usr/bin/open (no shell); nothing in it comes from a request except the
 #     choice of an allow-listed origin and an allow-listed bundle id.
-# The re-fronting after a restart that finds an interrupted record (M-b, UX-9 condition 3) is NOT built.
+# D4 M-b condition 3 (plan:133): a restarted helper that finds an interrupted record written by M-b
+# brings the setup browser's page to the front again ONCE (refront_once), on the same first-readiness
+# trigger, recorded in the same announced.json (refronted_for = the flow id).
 OPEN_BIN = _seam("GA4_HELPER_OPEN_BIN", "/usr/bin/open")             # FX-5: a fake only in qa/tests
 LSOF_BIN = _seam("GA4_HELPER_LSOF_BIN", "/usr/sbin/lsof")             # FX-5: a fake only in qa/tests
 BROWSER_BUNDLES = ("com.google.Chrome", "org.mozilla.firefox", "com.microsoft.edgemac",
@@ -2421,6 +2625,22 @@ def announced_for():
         return None
 
 
+def _announce_record():
+    try:
+        with open(ANNOUNCE_PATH, encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _announce_update(**kv):
+    """announced.json keeps announced_for (WP-H4) and refronted_for (D4) side by side."""
+    d = {k: v for k, v in _announce_record().items() if k in ("announced_for", "refronted_for")}
+    d.update(kv)
+    _write_json_0600(ANNOUNCE_PATH, d, ".announced.")
+
+
 def setup_incomplete():
     with LOCK:
         return STATE["local_credential"] != "present"
@@ -2449,10 +2669,15 @@ def announce_once(watch_s=None):
         if time.time() >= end:
             return "not_loaded"
         time.sleep(ANNOUNCE_POLL_S)
+    # MD-3 (D5): while a keychain reconcile is OWED, "setup incomplete" is not yet known (a token may
+    # be in the locked keychain); wait for it, bounded by this announcer's own window (the same
+    # `end`: ANNOUNCE_WATCH_S from the start of announce_once). At the cap, go on exactly as before.
+    while _RECON["owed"] and time.time() < end:
+        time.sleep(ANNOUNCE_POLL_S)
     if announced_for() == key:
         return "already"
     try:                                      # recorded FIRST: once per install, even on a crash
-        _write_json_0600(ANNOUNCE_PATH, {"announced_for": key}, ".announced.")
+        _announce_update(announced_for=key)
     except OSError as exc:
         log("the announcement record could not be written (%s); the site is not opened"
             % type(exc).__name__)
@@ -2479,10 +2704,70 @@ def announce_once(watch_s=None):
     return "opened" if ok else "open_failed"
 
 
+def refront_once(watch_s=None):
+    """D4 M-b condition 3 (plan:133): "after Claude is reopened, the helper brings the setup browser's
+    page to the front again (the restarted helper sees the persisted interrupted record and runs the
+    same `open -b`; WP-H4's once-per-install trigger is extended by exactly this case)". On the same
+    trigger as WP-H4 (first claude_loaded.ok), ONCE per interrupted flow (refronted_for, written
+    first). Round 3 (N-1): the URL carries a fresh nonce "&rf=<rf>", and for OWNER_STALE_S only the
+    /status claim carrying that rf takes ownership (claim_owner_locked). Returns a fixed word."""
+    mb = _REFRONT["v"]
+    if mb is None:
+        return "none"
+    if _announce_record().get("refronted_for") == mb["flow_id"]:
+        return "already"
+    end = time.time() + (ANNOUNCE_WATCH_S if watch_s is None else watch_s)
+    while not claude_loaded()["ok"]:
+        if time.time() >= end:
+            return "not_loaded"
+        time.sleep(ANNOUNCE_POLL_S)
+    if _announce_record().get("refronted_for") == mb["flow_id"]:
+        return "already"
+    try:
+        kv = {"refronted_for": mb["flow_id"]}
+        key = install_key()
+        if key is not None:
+            kv["announced_for"] = key         # the user's page is open: no separate announcement
+        _announce_update(**kv)
+    except OSError as exc:
+        log("the re-front record could not be written (%s); nothing is opened" % type(exc).__name__)
+        return "open_failed"
+    import secrets                            # round 3 (N-1): one nonce per re-front, memory only
+    rf = secrets.token_urlsafe(16)
+    url = mb["url"] + "&rf=" + rf
+    base = mb["url"].split("#", 1)[0]
+    u = urllib.parse.urlsplit(base)
+    if not mb_url_valid(url, mb["flow_id"]):
+        return "open_failed"
+    with LOCK:                                # the re-front window: only this rf takes ownership
+        _RF.update(value=rf, origin="%s://%s" % (u.scheme, u.netloc),
+                   until=time.time() + OWNER_STALE_S)
+    try:
+        r = subprocess.run([OPEN_BIN, "-b", mb["bundle"], url], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=OPEN_BOUND_S)
+        ok = r.returncode == 0
+    except Exception:
+        ok = False
+    if ok:
+        # MD-1 (CR5-25): the window restarts once `open` has returned, so a slow cold browser launch
+        # cannot spend it before the page can claim -- only if it still holds THIS nonce
+        with LOCK:
+            if _RF["value"] is not None and hmac.compare_digest(_RF["value"].encode(), rf.encode()):
+                _RF["until"] = time.time() + OWNER_STALE_S
+    if not ok:
+        with LOCK:
+            if _RF["value"] == rf:
+                _rf_clear_locked()
+    log("after the restart: the setup browser's page was %s" % ("brought forward" if ok
+                                                                 else "NOT brought forward"))
+    return "refronted" if ok else "open_failed"
+
+
 def start_announcer():
     def run():
         try:
-            announce_once()
+            if refront_once() != "refronted":     # D4: a re-front stands in for the announcement
+                announce_once()
         except Exception as exc:
             log("announcer: %s" % type(exc).__name__)
     threading.Thread(target=run, daemon=True).start()
@@ -2669,22 +2954,44 @@ def _launcher_read_pending():
     return False
 
 
-def reconcile_from_keychain():
+def reconcile_from_keychain(quiet=False):
     """0.6.3 (O8 14:36): an update REPLACES the extension folder, and with it this helper's state
     file -- so a fresh helper reported "not connected" over a refresh token still in the keychain.
-    With NO state file, the keychain is read ONCE: never on a locked keychain (that is where a
-    dialog would come from), never beside a pending launcher read, never killed (_sec)."""
-    if os.path.exists(STATE_PATH) or not KEYCHAIN:
-        return
+    MD-3 FR-2 (+ FR-3): it runs whenever this run holds NO credential (local_credential is not
+    "present"; a locked-period /verify may have written a state file meanwhile) and no /disconnect
+    happened in this run. Never on a locked keychain (that is where a dialog would come from), never
+    beside a pending launcher read or a store, never killed (_sec).
+    Returns "restored" | "absent" | "owed" | "gave_up" | "skip". `quiet`: a retry logs only a
+    resolution, never the owed reason again (MD3-C1)."""
+    if not KEYCHAIN:
+        return "skip"
+    with LOCK:
+        if STATE["local_credential"] == "present" or _RECON["disconnected"]:
+            return "skip"
     if not _keychain_readable():
-        log("no state file; the keychain is not unlocked, so it is not read (no dialog)")
-        return
+        if not quiet:
+            log("no credential held; the keychain is not unlocked, so it is not read (no dialog)")
+        return "owed"
     if _launcher_read_pending():
-        log("no state file; a launcher keychain read is still pending, so none is started here")
-        return
-    kind, val = refresh_token_read()      # F6: `val` is the token on "present", a reason otherwise
-    if kind == "present":
-        with LOCK:
+        if not quiet:
+            log("no credential held; a launcher keychain read is still pending, so none is started")
+        return "owed"
+    with _STORE_MUTEX:                    # never beside a store (the CR3-1 lock order)
+        kind, val = refresh_token_read()  # F6: `val` is the token on "present", a reason otherwise
+        if kind == "unknown":
+            if isinstance(val, str) and val.startswith("keychain_rc_"):
+                # `security` RAN and failed: a resolution, so it is not re-run every retry (MD3-C2)
+                log("the keychain could not be read (%s); the reconcile is not retried" % val)
+                return "gave_up"
+            if not quiet:                 # locked or busy: _sec spawned nothing; still owed
+                log("no credential held; the keychain could not be read (%s); owed" % val)
+            return "owed"
+        if kind == "absent":
+            log("no credential held; no refresh token in the keychain -- not connected")
+            return "absent"
+        with LOCK:                        # re-checked at apply time (a store, or a /disconnect)
+            if STATE["local_credential"] == "present" or _RECON["disconnected"]:
+                return "skip"
             STATE["local_credential"] = "present"
             STATE["provider_authorization"] = "granted"
             STATE["connection_id"] = _b64u(os.urandom(9))
@@ -2693,12 +3000,49 @@ def reconcile_from_keychain():
             # re-verify records the truth (verified, or a truthful failure).
             STATE["google_access"] = "verified"
             STATE["verification"] = None
-        state_save()
-        log("no state file; a refresh token IS in the keychain -- connection restored, re-verifying")
-    elif kind == "absent":
-        log("no state file; no refresh token in the keychain -- not connected")
-    else:
-        log("no state file; the keychain could not be read (%s) -- state left as not connected" % val)
+    state_save()
+    log("no credential held; a refresh token IS in the keychain -- connection restored, re-verifying")
+    return "restored"
+
+
+def reconcile_attempt():
+    """MD-3 FR-2 (K3): one quiet re-attempt of an OWED reconcile. Single flight (a second caller
+    returns at once). The cheap gate first: only SecKeychainGetStatus (and, inside, `ps -o comm=` for
+    a pending launcher read) runs until both say go; `security` then runs once (MD3-C2)."""
+    if not _RECON["owed"] or not _RECON_LOCK.acquire(blocking=False):
+        return
+    restored = False
+    try:
+        if not _RECON["owed"] or not _keychain_readable():
+            return
+        r = reconcile_from_keychain(quiet=True)
+        if r == "owed":
+            return
+        _RECON["owed"] = False            # restored | absent | gave_up | skip: resolved
+        restored = r == "restored"
+    finally:
+        _RECON_LOCK.release()
+    if restored and CONFIGURED:
+        reverify_after_restart()          # as main does for a start-time restore
+
+
+def reconcile_owed_start():
+    """MD-3 FR-2 (K3): the reconcile could not run at start; re-attempt it every RECON_RETRY_S for
+    RECON_WAIT_S (and, after that, on /status). Logged once here and once at the end (MD3-C1)."""
+    _RECON["owed"] = True
+    log("the keychain reconcile is deferred until the keychain can be read")
+
+    def loop():
+        end = time.time() + RECON_WAIT_S
+        while time.time() < end and _RECON["owed"]:
+            time.sleep(RECON_RETRY_S)
+            try:
+                reconcile_attempt()
+            except Exception as exc:
+                log("deferred reconcile: %s" % type(exc).__name__)
+        if _RECON["owed"]:
+            log("the deferred reconcile gave up after %.0f s; /status will still try it" % RECON_WAIT_S)
+    threading.Thread(target=loop, daemon=True).start()
 
 
 def legacy_flag_write(path):
@@ -2755,7 +3099,8 @@ def main():
     migrate_file(LEGACY_STATE_PATH, STATE_PATH)      # 1.1.0 (N-5): before anything reads it
     state_load()
     restore_after_restart()                          # PLAN-05 WP-H2/H3
-    reconcile_from_keychain()
+    if reconcile_from_keychain() == "owed":          # MD-3 FR-2: re-attempted when readable
+        reconcile_owed_start()
     if STATE["local_credential"] == "present" and CONFIGURED and _keychain_readable():
         threading.Thread(target=reverify_after_restart, daemon=True).start()
     port = int(os.environ.get("GA4_HELPER_PORT", str(DEFAULT_PORT)))

@@ -169,8 +169,16 @@ def log(msg):
 
 
 # ----------------------------------------------------------------- V3: the ADC file
-def proc_start(pid):
+# MD-3 FR-1: ps renders lstart in the LOCAL zone and the locale's words; a process identity must not
+# change when the Mac's time zone or language does. Every start-time read pins both (measured: with
+# only these two variables ps prints the same format, in UTC; a dead pid still gives rc 1).
+PS_ENV = {"TZ": "UTC0", "LC_ALL": "C"}
+
+
+def proc_start(pid, legacy=False):
     """How the OS reports that pid's start time, or None if it cannot be established.
+    MD-3 FR-1: rendered in UTC with the C locale (PS_ENV); legacy=True reproduces the pre-MD-3
+    inherited-environment rendering, used ONLY to compare a record written by older code.
 
     A pid is NOT an identity: pid counters wrap, and this machine's wrapped four times in a
     single session, so a stale pid can easily name a live stranger. (pid, start time) is the
@@ -186,7 +194,8 @@ def proc_start(pid):
     """
     try:
         r = subprocess.run(["/bin/ps", "-p", str(int(pid)), "-o", "lstart="],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, timeout=10,
+                           env=None if legacy else PS_ENV)
     except Exception:
         return None
     if r.returncode != 0:
@@ -194,8 +203,10 @@ def proc_start(pid):
     return r.stdout.strip()
 
 
-def owner_state(pid, recorded_start):
-    """alive | dead | unknown for the process that wrote an ADC file."""
+def owner_state(pid, recorded_start, recorded_utc=None):
+    """alive | dead | unknown for the process that wrote an ADC file. MD-3 FR-1: a UTC record
+    (recorded_utc) is compared with the pinned rendering; a legacy local-time record (an older peer)
+    is compared with today's inherited rendering, until that peer restarts."""
     try:
         pid = int(pid)
     except Exception:
@@ -204,10 +215,17 @@ def owner_state(pid, recorded_start):
     if st is None:
         return "unknown"
     if st == "":
-        return "dead"
+        return "dead"                          # the pid is really gone: dead in any zone
+    if recorded_utc:
+        return "alive" if st == recorded_utc else "dead"
     if not recorded_start:
         return "unknown"
-    return "alive" if st == recorded_start else "dead"
+    if st == recorded_start:
+        return "alive"                         # e.g. a UTC-zone host
+    loc = proc_start(pid, legacy=True)         # legacy: an older peer's local-time string
+    if loc is None:
+        return "unknown"
+    return "alive" if loc == recorded_start else "dead"
 
 
 def sweep_stale():
@@ -244,18 +262,20 @@ def _sweep_one(path):
         if STALE_MARKER not in raw:
             log("refusing to delete %s: it is not ours" % path)
             return False
-        owner_pid, owner_start = None, None
+        owner_pid, owner_start, owner_utc = None, None, None
         try:
             doc = json.loads(raw)
             owner_pid = doc.get("_owner_pid")
             owner_start = doc.get("_owner_start")
+            owner_utc = doc.get("_owner_start_utc")       # MD-3 FR-1 (absent in older files)
         except Exception:
             pass
         if owner_pid is None:
             os.unlink(path)
             log("swept a stale credential file from a previous run (no owner recorded)")
             return True
-        state = owner_state(owner_pid, owner_start)
+        state = owner_state(owner_pid, owner_start,
+                            owner_utc if isinstance(owner_utc, str) else None)
         if state == "dead":
             os.unlink(path)
             log("swept a stale credential file: its owner (pid %s) is gone" % owner_pid)
@@ -286,7 +306,10 @@ def write_adc(token_json):
     os.chmod(PRIVATE, 0o700)
     payload = dict(token_json)
     payload["_owner_pid"] = os.getpid()
-    payload["_owner_start"] = proc_start(os.getpid()) or ""
+    # MD-3 FR-1 (D1): _owner_start keeps the legacy local-time string, which OLDER launchers compare;
+    # _owner_start_utc carries the zone-free one. Both are proc_start strings only.
+    payload["_owner_start"] = proc_start(os.getpid(), legacy=True) or ""
+    payload["_owner_start_utc"] = proc_start(os.getpid()) or ""
     fd, tmp = tempfile.mkstemp(prefix=".adc-", suffix=".tmp", dir=PRIVATE)
     try:
         os.fchmod(fd, 0o600)
@@ -650,17 +673,22 @@ _RUN_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # process's identity (pid + `ps -o lstart=` start time, the owner_state rule). The three MCP lifecycle
 # events carry all three, so the helper counts a session only while that very process is alive.
 LAUNCHER_SESSION = os.urandom(9).hex()
-SELF_ID = {"pid": os.getpid(), "pid_start": None}
+SELF_ID = {"pid": os.getpid(), "pid_start": None, "pid_start_utc": None}
 
 
 def self_identity():
     """{launcher_session, pid, pid_start} for the WP-H1 events. pid_start is read once (None if ps
     could not answer; the helper then never counts the session)."""
+    # MD-3 FR-1 (D1): pid_start stays the legacy local-time string (an older 1.2.0 helper still
+    # compares it); pid_start_utc is the zone-free one the MD-3 helper prefers. Read once each.
     if SELF_ID["pid_start"] is None:
-        st = proc_start(SELF_ID["pid"])
+        st = proc_start(SELF_ID["pid"], legacy=True)
         SELF_ID["pid_start"] = st or None
+    if SELF_ID["pid_start_utc"] is None:
+        st = proc_start(SELF_ID["pid"])
+        SELF_ID["pid_start_utc"] = st or None
     return {"launcher_session": LAUNCHER_SESSION, "pid": SELF_ID["pid"],
-            "pid_start": SELF_ID["pid_start"]}
+            "pid_start": SELF_ID["pid_start"], "pid_start_utc": SELF_ID["pid_start_utc"]}
 
 
 def note_helper_run(run_id):
@@ -709,10 +737,12 @@ def status_event(kind, **fields):
     its own unique temporary file, and a file that cannot be read is PRESERVED as
     `status.json.corrupt-<time>-<pid>` -- never overwritten silently.
     """
-    # PLAN-05 WP-H1 adds exactly four: launcher_session, pid, pid_start, tools_ok (none can carry
-    # a secret: a random id, a process id, a start time, a boolean).
+    # PLAN-05 WP-H1 adds exactly five (MD-3 D1: pid_start_utc joins launcher_session, pid,
+    # pid_start, tools_ok); none can carry a secret: a random id, a process id, two start-time
+    # strings from proc_start, a boolean.
     allowed = {"tool", "property_id", "client", "arguments", "result_sha256", "ok", "state",
-               "outcome", "sec_pid", "launcher_session", "pid", "pid_start", "tools_ok"}
+               "outcome", "sec_pid", "launcher_session", "pid", "pid_start", "tools_ok",
+               "pid_start_utc"}
     ev = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "kind": kind}
     for k, v in fields.items():
         if k in allowed and v is not None:

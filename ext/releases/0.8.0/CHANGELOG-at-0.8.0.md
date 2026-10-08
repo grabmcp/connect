@@ -26,10 +26,16 @@ Helper 1.2.0. Built only by the GitHub Actions workflow in grabmcp/connect or by
 
 | artifact | sha256 |
 |---|---|
-| `helper.py` (helper 1.2.0) | `8cc3e787f1fa931b701232f43d854b5917103f9e0db57cd3d4baa95e9c6483ec` |
-| `launcher.py` | `467d3d5d95fcb08141b37ca2dc506f2f36ad8dca7f9430ece745cd9a65ee094f` |
+| `helper.py` (helper 1.2.0) | `e54fa2a7f46dc28ce5729171ded9b9cbf37bfe54f7e32ff55d06672e25784d92` |
+| `launcher.py` | `a30ced04223313f55c41cc4c6ef87cfeb870955e4d34df909211d55f0b0b52a4` |
 | `manifest.json` (0.8.0) | `0a84c62b52b102e100dcce7cfa00fd817eaf0896d4aa0d2680cb63fa0edcb943` |
 | `build-0.8.0.py` | `6ff8411c4e65356c879e58914bb74bf557ebdede5bdae745a063dc36a577cc8d` |
+
+**The helper changed inside 0.8.0 after the round-2 freeze (round 3: org_blocked, re-front nonce;
+INTERFACE-05 §8.1, §8.4):** round-2 `helper.py` `798b46034a8831bc6000111b7902ca143828d76ce67c751c21cb5b36ea7370c8`, round-3 `helper.py` `3f20757e24f990ec8b83bedaeb3229c9c18af984ccd23ca2f1411fd84255dfab`.
+**MD-1/MD-2 (Reviewer 09:12:43, 10:48:42):** the re-front window restarts after a successful open, a /connect/start without a tab ends it, `_RF` drops its unused flow_id; `/verify` with no credential publishes `not_connected`; **CR5a-1 (Reviewer 10:56:47):** that `/verify` also clears `local_credential`, `connection_id` and `verification`; round-3 `helper.py` `3f20757e24f990ec8b83bedaeb3229c9c18af984ccd23ca2f1411fd84255dfab` -> `4738e749e9c0ed42ab78b77dfc0f338e1754c8e521cb86fc5cf0b49f1bec0b7a` -> `b08c66ffbaf9d2b7873ad2af1433d1a5e32289e7ca6989caf2f63e581130dde2`.
+**MD-3 (Reviewer 11:51:08):** FR-1, a session's start-time identity no longer depends on the time zone or language (`ps` pinned to TZ=UTC0, LC_ALL=C; legacy local-time strings still accepted; launcher events add `pid_start_utc` and the credential file `_owner_start_utc`); FR-2 and FR-3, a keychain reconcile that could not run at start is re-attempted once the keychain can be read and no launcher read is pending (never on a locked keychain, single flight), and runs whenever no credential is held; the WP-H4 announcer waits while that reconcile is owed, within its own window; `helper.py` `b08c66ffbaf9d2b7873ad2af1433d1a5e32289e7ca6989caf2f63e581130dde2` -> `e54fa2a7f46dc28ce5729171ded9b9cbf37bfe54f7e32ff55d06672e25784d92`, `launcher.py` `467d3d5d95fcb08141b37ca2dc506f2f36ad8dca7f9430ece745cd9a65ee094f` -> `a30ced04223313f55c41cc4c6ef87cfeb870955e4d34df909211d55f0b0b52a4`.
+Nothing else in this folder's code changed.
 
 `helper_compare.py`, `requirements.in` and `requirements.txt` are byte-equal to 0.7.0's. Google's server tree
 is unchanged: `SERVER-TREE.sha256` is carried from 0.7.0, and all 14 files match.
@@ -52,7 +58,12 @@ is unchanged: `SERVER-TREE.sha256` is carried from 0.7.0, and all 14 files match
 3. **Shutdown (WP-H3):** a SIGTERM handler bounded at 1.5 s persists `{flow_id, claude_pid, claude_pid_start,
    at}` while a sign-in is pending (from the start until its outcome is published). At the next start that
    flow is published "interrupted", with `cause: "claude_closed"` only if the recorded Claude Desktop process
-   (found by walking the parent chain) is gone. Opening the browser on quit (M-b) is not built.
+   (found by walking the parent chain) is gone. **M-b** (released by the Reviewer, gate 2026-10-08
+   06:43:05; PLAN-05 §3.4): within the same bound, and only for a pending flow matched by id whose setup
+   browser was recorded at `/connect/start` and is allow-listed, the handler also runs `/usr/bin/open -b
+   <that browser> <return_to>#return=<flow_id>` (neutral Interrupted; no cause is claimed at SIGTERM); the
+   interrupted flow gives up tab ownership; the restarted helper brings that page to the front once more,
+   on the first-readiness trigger (`refronted_for` in `announced.json`).
 4. **Opening the site and the owner tab (WP-H4, FX-1, FX-3, FX-10, FX-12):** once per install (keyed on the
    extension folder's creation time, `announced.json`), on first readiness with no saved credential, the helper
    runs `/usr/bin/open [-b <allow-listed browser>] <origin>/connect/#ready=<run_id>[&owner=1]`, the browser
@@ -67,8 +78,10 @@ is unchanged: `SERVER-TREE.sha256` is carried from 0.7.0, and all 14 files match
    carry a bool only; while it is false, and only while `/status` says `ready`, it is re-read (at most
    once a second, one re-read at a time; FX-15).
 6. **`google_access_reason` (WP-H6):** `revoked_or_unrenewable` (invalid_grant), `transient` (unreachable,
-   5xx, 429, timeouts; never admin_policy_enforced), `unknown`, or null; on `/status` and `/verify`. The token
-   endpoint's 5xx/429 now reads `http_<code>`.
+   5xx, 429, timeouts; never admin_policy_enforced), `org_blocked` (any error naming admin_policy_enforced;
+   round 3), `unknown`, or null; on `/status` and `/verify`. The token endpoint's 5xx/429 now reads
+   `http_<code>`. Round 3 also adds a re-front nonce: the re-fronted page's URL carries `&rf=<nonce>` and,
+   for 15 s, only the `/status` claim carrying it takes ownership (memory only, never logged).
 7. **POST bodies (FX-2, CR5-9):** every POST body is read before the answer (at most 8192 B); a longer,
    chunked or malformed one is never acted on: 413 `body_too_large` (204 for `/release`), and the connection
    closes.
