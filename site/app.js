@@ -1,160 +1,90 @@
-/* Connect Google Analytics to Claude: the page logic.
+/* Connect Google Analytics to Claude: the journey logic (WP-S2, PLAN-05 v1.1, INTERFACE-05).
  *
- * The page talks ONLY to the helper that runs inside the Claude extension on this Mac, at
- * the loopback address below (helper contract 1.0; 1.1.0 features are feature-detected). It
- * holds no secret, never receives a token, and never shows the sign-in address it is given.
+ * The page talks ONLY to the helper inside the Claude extension on this Mac, at the loopback
+ * address below (helper 1.2.0). It holds no secret, never receives a token, stores nothing
+ * (no storage API of any kind), writes no markup (every view change goes through
+ * GrabViews.render from views.js) and never injects a question anywhere.
  *
- * Instruction P step 3: the views are the approved design's frames, one section[data-state] each:
- *   S0 = D-p2 (disclose) -> S1 = D-p3 (install) -> PAIR = D-p4 (pair; ready / not found /
- *   permission denied in its status area) -> S4 = D-p5 (full disclosure) -> Google's screens
- *   (D-p6, their own tab; "#return" is the fallback) -> S6 = D-p8 (Google verified) -> S7 = D-p9 (ask
- *   Claude) -> S8 = D-p10 (Claude verified). F3 = D-p7 (4a). F4 is not drawn (brief p.17/p.18).
- *   RET is the moment after the return while the helper's test call runs (not drawn).
- * N-1: nothing is sent to 127.0.0.1 before a user click. Detection starts at "Find the helper",
- * the click the design precedes with its browser-prompt announcement (D-p4).
- * A-8: the #return load is the user's click on the callback "Return to grabmcp"; within N-1 per
- * Reviewer ruling 2026-10-07 05:39:54 (A-8). FLAG U-18: #return opened in another browser or after
- * the permission was revoked is undrawn (Owner to rule).
- * FLAG R-1: one page with in-page progress; the design's drawn paths (/connect/…) are not built
- * as routes (brief p.4).
+ * Which screen shows is decided from the helper's state (/status), never from the page:
+ *   plan s3.1 N1-N15, s3.2 R1-R3 and R-resume, s4 state rules, s5 "ready", s6 privacy.
+ * Signals: perm = navigator.permissions.query loopback-network (fallback local-network-access);
+ * a query that rejects or throws counts as "unsupported" (F-4 / UX-18).
+ * No loopback request is made on load unless perm is "granted" (T-STATIC-NO-AUTO-REQUEST).
  */
 (function () {
   "use strict";
 
-  // The helper's fixed port (contract 1.0). The page takes NO port from its address (gate
-  // condition 3, Reviewer 12:05); the tests serve a copy with this one constant rewritten.
+  // The helper's fixed port. ONE constant line: the tests serve a copy with it rewritten.
   var HELPER_PORT = 50812;
-
-  // D6, the ONE switch. Owner ruling 2026-10-05 12:11: the .mcpb is downloaded from this site
-  // (true). false = the participant opens a file they received instead.
-  var MCPB_ON_SITE = true;
-
-  var TICK_MS = 2500;              // how often the page checks the helper, once started
-  var REQUEST_TIMEOUT_MS = 8000;   // one request may take this long before it counts as failed
-  // N-13: the helper's callback window (CALLBACK_WAIT_S = 600) plus a 15 s margin.
-  var FLOW_TIMEOUT_MS = 600000 + 15000;
-  var SEARCH_FAIL_MS = 10000;      // a network failure persisting 10 s -> "Helper not found"
-  var RETURN_TO_SINCE = [1, 1, 0]; // helper version that accepts `return_to` (INTERFACE-03 §3)
-  var RETURN_HASH = "#return";     // the fragment the callback page's return action carries
-
-  // Where the page keeps its place across a reload (p.8 "חזרה אחרי הפרעה", p.17): the tab's own
-  // history entry state. No storage API is used (site check :257 forbids it without an approved
-  // amendment), so a reopen in a NEW tab is not restored (FLAG U-11).
-  var STATE_KEY = "grabmcpView";
-
   var BASE = "http://127.0.0.1:" + HELPER_PORT;
 
-  // Owner ruling C-5 (21:25): the helper's credential-store states never reach the user as
-  // such; they read as a sign-in that could not be saved, with Try again (the F4 path).
-  var CREDENTIAL_STORE_DOWN = { keychain_locked: true, keychain_unavailable: true };
-  // AWAITING OWNER (O-1)
-  var SIGNIN_NOT_SAVED = "Your Google sign-in couldn’t be saved on this Mac. Try connecting again.";
-
-  function signinSaved(s) {
-    return !!s && s.local_credential === "present";
-  }
+  var TICK_MS = 2500;                  // N4/N5: /health polling, fixed cadence
+  var PERM_REQUERY_MS = 2500;          // N3/UX-8: re-query the permission (no network)
+  var DOWNLOAD_BOUND_MS = 600000;      // N4: up to 10 min after the Download click, then N5
+  var FINISHING_MS = 20000;            // N8 -> N10: "Finishing setup..." shows at most 20 s (UX-13)
+  var REQUEST_TIMEOUT_MS = 8000;       // one loopback request may take this long
+  // FX-6 (INTERFACE-05 s7.4): each timeout exceeds the helper's worst case for its route.
+  var VERIFY_TIMEOUT_MS = 75000;       // POST /verify: keychain read + up to four Google calls
+  var OPEN_TIMEOUT_MS = 15000;         // the helper's Claude-open call (open 10 s + front check 2 s)
+  var AWAY_RESUME_MS = 10000;          // if the same-tab navigation to Google never happens
+  var TEMP_DELAYS_MS = [5000, 10000, 20000];   // N12 back-off ...
+  var TEMP_EVERY_MS = 30000;                   // ... then every 30 s while the page is visible
+  var RETURN_TO_PATH = "/connect/";    // return_to = origin + "/connect/#return" (lead's task)
+  var CHANNEL_NAME = "grabmcp-connect";
+  var CLAUDE_LINK = "claude://";       // exactly this, never with a question (T-STATIC-NO-PROMPT)
+  var PERM_NAMES = ["loopback-network", "local-network-access"];
+  var ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+  var FOCUS_INTENT_MS = 20000;         // UXB-6: a click's own outcome (the open call is bounded at 15 s)
 
   var $ = function (id) { return document.getElementById(id); };
 
-  // ------------------------------------------------------------------ the step bar (design)
-  // Labels and looks exactly as each frame draws them. D-p3 draws the short labels; D-p10 draws
-  // no bar at all.
-  var FULL = ["1 · Disclose", "2 · Install", "3 · Pair helper", "4 · Google access",
-    "5 · Claude connection"];
-  var SHORT_S1 = ["1 · Disclose", "2 · Install", "3 · Pair", "4 · Google", "5 · Claude"];
-  var DONE = " — done";
-
-  function bar(view) {
-    // Each entry: [label, look]; looks: done | active | active-ok | active-warn | done-ok | todo
-    var L = FULL;
-    switch (view) {
-      case "S0":
-        return [[L[0], "active"], [L[1], "todo"], [L[2], "todo"], [L[3], "todo"], [L[4], "todo"]];
-      case "S1":
-        L = SHORT_S1;             // FLAG I-1: D-p3 draws the short labels
-        return [[L[0] + DONE, "done"], [L[1], "active"], [L[2], "todo"], [L[3], "todo"], [L[4], "todo"]];
-      case "PAIR":
-        return [[L[0] + DONE, "done"], [L[1] + DONE, "done"], [L[2], "active"], [L[3], "todo"], [L[4], "todo"]];
-      case "S4": case "RET": case "F4":
-        return [[L[0] + DONE, "done"], [L[1] + DONE, "done"], [L[2] + DONE, "done"], [L[3], "active"], [L[4], "todo"]];
-      case "F3":
-        return [[L[0] + DONE, "done"], [L[1] + DONE, "done"], [L[2] + DONE, "done"],
-          [L[3] + " — not granted", "active-warn"], [L[4], "todo"]];
-      case "S6":
-        return [[L[0] + DONE, "done"], [L[1] + DONE, "done"], [L[2] + DONE, "done"],
-          [L[3] + " — verified", "active-ok"], [L[4], "todo"]];
-      case "S7":
-        return [[L[0] + DONE, "done"], [L[1] + DONE, "done"], [L[2] + DONE, "done"],
-          [L[3] + " — verified", "done-ok"], [L[4], "active"]];
-      default:
-        return null;            // FLAG I-2: S8 (D-p10) draws no step bar
+  // ------------------------------------------------------------------ the per-tab id
+  // Random, in memory only (never stored, never shown); sent as ?tab= on /status and in the
+  // /connect/start body (helper: [A-Za-z0-9_-]{8,64}). A new one after a bfcache restore (pageshow).
+  function newTabId() {
+    var abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    var b = new Uint8Array(16), s = "", i;
+    if (window.crypto && typeof window.crypto.getRandomValues === "function") {
+      window.crypto.getRandomValues(b);
+    } else {
+      for (i = 0; i < b.length; i++) { b[i] = Math.floor(Math.random() * 256); }
     }
+    for (i = 0; i < b.length; i++) { s += abc.charAt(b[i] & 63); }
+    return s;
   }
+  var TAB = newTabId();
 
-  var state = {
-    view: "S0",          // the current frame
-    pair: "idle",        // PAIR's status area: idle | searching | ready | notfound | denied
-    polling: false,      // the helper poll runs (only ever started by a click, N-1)
-    searching: false,    // a "find the helper" search is open
-    searchStartedAt: 0,
-    restoreTo: null,     // the frame stored before a reload (p.8 / p.17)
-    found: false,        // /health answered "running" to this page on the last check
-    lastHealthAt: null,  // when that last successful check finished (ms)
-    version: null,       // /health version, e.g. "1.1.0"
-    refused: null,       // /status refused this page (HTTP code), if it did
-    status: null,        // the last /status answer
-    lastProperty: null,  // U-20: the last property /status named on this connection (D-p9 keeps it)
-    flowBusy: false,     // a /connect/start request is in flight
-    flow: null,          // {id, startedAt} of the sign-in this page started (site tab waits on D-p5)
-    gen: 0,              // CRP-4: bumped when the page leaves D-p5; a late /connect/start answer is dropped
-    statusReqAt: 0,      // CRP-6: when the request behind state.status was sent (ms)
-    failCause: ""        // F4's one cause line
+  // ------------------------------------------------------------------ the page's state
+  var S = {
+    perm: "unknown",      // granted | prompt | denied | unsupported
+    view: null,           // the state shown (GrabViews.STATES), null before the first decision
+    sub: null,
+    status: null,         // the last good /status answer
+    ctx: null,            // how this load arrived: see parseHash()
+    loadVerify: false,    // R1/UX-16: a fresh POST /verify at this load, before deciding
+    justVerified: false,  // the /status being judged was read right after our own /verify
+    verifying: false,
+    unverifiedSince: 0,   // N8: a completed flow whose verification the helper is still running
+    downloaded: false,    // the Download click happened (download polling may run, N4)
+    dlStartedAt: 0,       // when the current 10-minute bound started
+    waitGrab: false,      // WAITING "grabmcp" after a claude:// Open button (N5, N13, R3)
+    waitClaude: false,    // WAITING "claude" after NotLoaded's Open button (N10)
+    finishStarted: false, // N8 "Finishing setup..." timer started
+    finishingExpired: false,
+    isOwner: false,       // /status.owner.is_you on the last read
+    startedFlowId: null,  // the flow this page started (then navigated to Google)
+    starting: false,      // a /connect/start is in flight
+    opening: false,       // the helper's Claude-open call is in flight
+    away: false,          // navigating to Google: no polling
+    reached: false,       // FX-13: this page has had an answer from the helper (/health or /status)
+    noPermModel: false,   // FX-14: #return / #ready load in a browser without the permission (unsupported)
+    gen: 0                // bumped when a user act or a denial makes an in-flight read stale
   };
-
-  (function applyGetVariant() {
-    var dl = $("get-download"), rx = $("get-received");
-    dl.hidden = !MCPB_ON_SITE;
-    rx.hidden = MCPB_ON_SITE;
-    // The inactive variant's control is no primary at all.
-    var off = MCPB_ON_SITE ? $("received-btn") : $("download-link");
-    off.removeAttribute("data-owner");
-    off.hidden = true;
-    $("s1-download-line").hidden = !MCPB_ON_SITE;
-    $("s1-received-line").hidden = MCPB_ON_SITE;
-    if (!MCPB_ON_SITE) {
-      $("f1-install-link").removeAttribute("href");
-      $("f1-install-link").removeAttribute("download");
-    }
-  })();
-
-  // D-p2 "Detected on this computer: macOS". The design is drawn for macOS only.
-  (function detectOs() {
-    var p = "";
-    try {
-      p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
-    } catch (e) { p = ""; }
-    // FLAG A-3: only "macOS" is drawn; the non-macOS names are undrawn.
-    var name = /mac/i.test(p) ? "macOS" : /win/i.test(p) ? "Windows" : /linux/i.test(p) ? "Linux" : p;
-    $("detected-os").textContent = name;
-  })();
-
-  // ------------------------------------------------------------------ the place across a reload
-  function remember(view) {
-    try {
-      var o = {};
-      o[STATE_KEY] = view;
-      history.replaceState(o, "", location.pathname + location.search);
-    } catch (e) { /* the page still works, without restore */ }
-  }
-  function remembered() {
-    try { return (history.state && history.state[STATE_KEY]) || null; } catch (e) { return null; }
-  }
-  var loadedAt = Date.now();
 
   // ------------------------------------------------------------------ talking to the helper
   // Every call resolves (never rejects): {network: true} when the helper could not be reached
-  // at all (not running, blocked by the browser, or not allowing this page).
-  function call(method, path, body) {
+  // at all (not running, blocked by the browser, or timed out).
+  function call(method, path, body, timeoutMs) {
     var opts = { method: method, mode: "cors", cache: "no-store", credentials: "omit" };
     if (method === "POST") {
       opts.headers = { "Content-Type": "application/json" };
@@ -164,7 +94,7 @@
     if (typeof AbortController === "function") {
       var ctl = new AbortController();
       opts.signal = ctl.signal;
-      timer = setTimeout(function () { ctl.abort(); }, REQUEST_TIMEOUT_MS);
+      timer = setTimeout(function () { ctl.abort(); }, timeoutMs || REQUEST_TIMEOUT_MS);
     }
     return fetch(BASE + path, opts).then(function (r) {
       return r.text().then(function (t) {
@@ -180,628 +110,677 @@
     });
   }
 
-  function versionAtLeast(v, min) {
-    if (typeof v !== "string") { return false; }
-    var p = v.split(".");
-    for (var i = 0; i < min.length; i++) {
-      var n = parseInt(p[i], 10);
-      if (isNaN(n)) { n = 0; }
-      if (n !== min[i]) { return n > min[i]; }
-    }
-    return true;
+  // ------------------------------------------------------------------ the permission (perm)
+  var permName = null;     // the permission name this browser answered for
+  var permWatched = null;  // the PermissionStatus whose onchange is watched
+
+  function queryName(n) {  // a throw, a rejection or a non-promise all become one promise
+    return new Promise(function (res) { res(navigator.permissions.query({ name: n })); });
   }
 
-  // D-p4 "Permission denied": the browser's own record of the user's choice on its local
-  // network prompt. Feature-detected; a browser without it never shows the denied state.
-  function lnaDenied() {
+  function queryPerm() {
     if (!navigator.permissions || typeof navigator.permissions.query !== "function") {
-      return Promise.resolve(false);
+      return Promise.resolve("unsupported");
     }
-    var names = ["loopback-network", "local-network-access", "local-network"];
-    return Promise.all(names.map(function (n) {
-      try {
-        return navigator.permissions.query({ name: n }).then(function (r) {
-          return !!r && r.state === "denied";
-        }, function () { return false; });
-      } catch (e) { return Promise.resolve(false); }
-    })).then(function (a) {
-      for (var i = 0; i < a.length; i++) { if (a[i]) { return true; } }
-      return false;
-    });
+    function tryName(i) {
+      if (i >= PERM_NAMES.length) { return Promise.resolve("unsupported"); }
+      var name = PERM_NAMES[i];
+      return queryName(name).then(function (st) {
+        if (!st || typeof st.state !== "string") { return tryName(i + 1); }
+        permName = name;
+        if (!permWatched) {
+          permWatched = st;
+          st.onchange = function () { setPerm(typeof st.state === "string" ? st.state : "prompt"); };
+        }
+        return st.state;
+      }, function () { return tryName(i + 1); });
+    }
+    var start = permName ? PERM_NAMES.indexOf(permName) : 0;
+    return tryName(start < 0 ? 0 : start).then(null, function () { return "unsupported"; });
   }
 
-  // ------------------------------------------------------------------ presentation helpers
+  // Re-query on a timer, on visibilitychange and on focus: no network, a query raises no prompt.
+  function requery() {
+    queryPerm().then(setPerm);
+  }
+
+  function setPerm(state) {
+    if (state === S.perm) { return; }
+    S.perm = state;
+    if (S.view === null) { return; }          // boot has not decided yet
+    if (state === "granted") {
+      if (S.view === "A") { go("A"); return; }   // the note hides; the click reads /health first (N1)
+      if (S.view === "LNABLOCKED" && !S.downloaded) {
+        // N3 for a #return / #ready load: now granted, decide as that load would have.
+        if (S.ctx.kind === "return" && !S.ctx.settled) { go("CHECKING", { sub: "checking" }); }
+        else { S.loadVerify = true; }
+      }
+      tickNow();                              // N2/N3: /health FIRST; B only if it is silent
+      return;
+    }
+    if (state === "denied") {
+      S.gen += 1;                             // a read still in flight must not undo this
+      if (S.view === "A") { go("A"); return; }
+      if (S.view !== "PASSIVE" && S.view !== "LNABLOCKED") { go("LNABLOCKED"); }
+      stopPoll();
+      return;
+    }
+    if (S.view === "A") { go("A"); }          // the LNA note shows only while "prompt"
+  }
+
+  // ------------------------------------------------------------------ rendering (views.js only)
+  function front(s) {
+    return !!(s && s.claude_frontmost && s.claude_frontmost.front === true);
+  }
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   // The helper and the launcher write "%Y-%m-%dT%H:%M:%S%z" (e.g. +0300); a colon is added so
-  // every browser parses it. Numbers are epoch seconds or milliseconds.
+  // every browser parses it.
   function toDate(v) {
-    var d = null;
-    if (typeof v === "number") {
-      d = new Date(v < 1e12 ? v * 1000 : v);
-    } else if (typeof v === "string") {
-      d = new Date(v.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
-    }
-    return (d && !isNaN(d.getTime())) ? d : null;
+    if (typeof v !== "string") { return null; }
+    var d = new Date(v.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+    return isNaN(d.getTime()) ? null : d;
   }
 
-  // The design's time form, "2 Oct, 19:36".
-  function when(v) {
-    var d = toDate(v);
+  // R1 "Last used in Claude": F-9 proposal (Owner-pending): "today, HH:MM" / "yesterday, HH:MM",
+  // else "D Mon, HH:MM"; null (line hidden) when never used.
+  function lastUsedText(s) {
+    var d = toDate(s && s.claude && s.claude.last_report_at);
     if (!d) { return null; }
-    return d.toLocaleString("en-GB", { day: "numeric", month: "short",
-      hour: "2-digit", minute: "2-digit" });
+    var hm = pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    var today = new Date();
+    var y = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+    function same(a, b) {
+      return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() &&
+        a.getDate() === b.getDate();
+    }
+    if (same(d, today)) { return "today, " + hm; }
+    if (same(d, y)) { return "yesterday, " + hm; }
+    return d.getDate() + " " + MONTHS[d.getMonth()] + ", " + hm;
   }
 
-  // D-p4's "Checked at [19:31]".
-  function hhmm(ms) {
-    return new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  // UXB-6: the new state's heading, else its visible status line, else its first paragraph.
+  var focusIntent = null, focusPlaced = null;   // focusPlaced: the element this code last focused
+  function focusTarget(sec) {
+    var h = sec.querySelector("h1, h2, h3");
+    if (h) { return h; }
+    var st = sec.querySelectorAll('[role="status"]');
+    for (var i = 0; i < st.length; i++) { if (!st[i].hidden) { return st[i]; } }
+    return sec.querySelector("p");
   }
-
-  // " at <strong>time</strong>" after a sentence, as the frames bold the time.
-  function atStrong(node, t) {
-    node.textContent = "";
+  function moveFocusIfClickHidden(shown, hadPlaced) {
+    if (!shown) { return; }
+    var fi = focusIntent, move = false;
+    if (fi && Date.now() - fi.at > FOCUS_INTENT_MS) { focusIntent = fi = null; }
+    if (fi && shown !== fi.section && fi.section.hidden) { move = true; focusIntent = null; }
+    // the same click's chain (e.g. Try now -> Checking -> R1): focus this code placed would
+    // otherwise fall to <body> when its section hides
+    if (!move && hadPlaced && (focusPlaced.hidden || !shown.contains(focusPlaced))) { move = true; }
+    if (!move) { return; }
+    var t = focusTarget(shown);
     if (!t) { return; }
-    node.appendChild(document.createTextNode(" at "));
-    var b = document.createElement("strong");
-    b.textContent = t;
-    node.appendChild(b);
+    t.setAttribute("tabindex", "-1");
+    try { t.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+    focusPlaced = t;
   }
 
-  function propertyParts() {
-    var prop = state.status && state.status.property;
-    // FLAG U-20 (undrawn state; Owner to rule): when Google access is no longer verified on the same connection (a failed verification records no property), D-p9 (and its Copy example) keeps the property this page already showed; the drawn line and example are unchanged. FLAG U-21: if none was ever named, the existing O-1 fallback texts stay.
-    if (!prop || !(prop.name || prop.id)) {
-      var last = state.lastProperty;
-      if (state.status && state.status.google_access !== "verified" && last && last.cid === state.status.connection_id) {
-        return { name: last.name, id: last.id };
-      }
-      return null;
+  function show(view, opts) {
+    opts = opts || {};
+    // KPI-3 gate (plan s5): D and R1 render ONLY on status.ready.
+    if ((view === "D" || view === "R1") && !(S.status && S.status.ready === true)) { return; }
+    var o = {};
+    if (opts.sub) { o.sub = opts.sub; }
+    if (opts.variant) { o.variant = opts.variant; }
+    if (view === "A") { o.lnaNote = S.perm === "prompt"; }
+    if (view === "D") {
+      var p = S.status && S.status.property;
+      if (p && typeof p.name === "string" && p.name !== "") { o.property = p.name; }
     }
-    var name = typeof prop.name === "string" ? prop.name : "";
-    var id = (typeof prop.id === "string" || typeof prop.id === "number") ? String(prop.id) : "";
-    state.lastProperty = { name: name, id: id, cid: state.status.connection_id };
-    return { name: name, id: id };
+    if (view === "R1") { o.lastUsed = lastUsedText(S.status); }
+    S.view = view;
+    S.sub = opts.sub || null;
+    var hadPlaced = !!focusPlaced && document.activeElement === focusPlaced;
+    moveFocusIfClickHidden(window.GrabViews.render(view, o), hadPlaced);
   }
 
-  // D-p9 "[Property name] · ID [property ID]", the name in bold.
-  function renderProperty(node) {
-    node.textContent = "";
-    var p = propertyParts();
-    if (!p) {
-      // AWAITING OWNER (O-1)
-      node.textContent = "The extension has not named the property yet.";
-      return;
+  // Every state change goes through here: it keeps the timers in step with the view.
+  function go(view, opts) {
+    opts = opts || {};
+    if (S.finishStarted && !(view === "CHECKING" && opts.sub === "finishing")) {
+      S.finishingExpired = true;
+      if (finishTimer) { clearTimeout(finishTimer); finishTimer = null; }
     }
-    var b = document.createElement("strong");
-    b.textContent = p.name;     // FLAG U-15 (undrawn; Owner to rule): a property without a name leaves the slot empty
-    node.appendChild(b);
-    if (p.id) { node.appendChild(document.createTextNode(" · ID " + p.id)); }
+    if (view !== "TEMPERROR" && !(view === "CHECKING" && S.verifying)) { tempStop(); }
+    if (view !== "WAITING") { S.waitClaude = false; S.waitGrab = false; }
+    show(view, opts);
+    if (view === "TEMPERROR") { tempEnsure(); }
   }
 
-  function exampleText() {
-    var p = propertyParts();
-    // The frame's text; "my website" when no property is named: AWAITING OWNER (O-1)
-    return "How many users visited " + (p && p.name ? p.name : "my website") + " last week?";
+  function readyView() {
+    // D after a sign-in this page came back from (N8 -> N9); R1 for a load that finds the
+    // helper ready (R1, R-resume).
+    return S.ctx && S.ctx.afterFlow ? "D" : "R1";
   }
 
-  // FLAG U-16 (undrawn; Owner to rule): the non-verified Google lines on D-p9/D-p10 are removed.
+  // ------------------------------------------------------------------ the decision (plan s3, s4)
+  // Returns {view, sub, variant} or {verify: true} (run POST /verify, then decide again).
+  function decide(s) {
+    var ga = s.google_access, lf = (s.last_flow && typeof s.last_flow === "object") ? s.last_flow : null;
+    var C = S.ctx;
 
-  function googleProvenAt(s) {
-    // D-p10 shows Google access last proven at the time of Claude's report call: a report call
-    // that succeeded is also a Google call. The later of the two times is shown.
-    var v = toDate(s && s.verification && s.verification.at);
-    var c = toDate(s && s.claude && s.claude.last_report_at);
-    if (v && c) { return when(v > c ? v.getTime() : c.getTime()); }
-    return when((v || c) ? (v || c).getTime() : null);
-  }
-
-  // ------------------------------------------------------------------ rendering
-  function renderBar() {
-    var b = bar(state.view);
-    $("stepbar").hidden = !b;
-    if (!b) { return; }
-    for (var i = 0; i < 5; i++) {
-      var li = $("pill-" + (i + 1));
-      li.textContent = b[i][0];
-      li.className = "pill " + b[i][1];
-      if (/^active/.test(b[i][1])) { li.setAttribute("aria-current", "step"); }
-      else { li.removeAttribute("aria-current"); }
-    }
-  }
-
-  function renderPanels() {
-    var panels = document.querySelectorAll("section[data-state]");
-    for (var i = 0; i < panels.length; i++) {
-      panels[i].hidden = panels[i].getAttribute("data-state") !== state.view;
-    }
-    // PAIR's status area: one result at a time; "Find the helper" only before a result.
-    var inPair = state.view === "PAIR";
-    $("pair-ready").hidden = !(inPair && state.pair === "ready");
-    $("pair-notfound").hidden = !(inPair && state.pair === "notfound");
-    $("pair-denied").hidden = !(inPair && state.pair === "denied");
-    // Each primary is hidden by its OWN attribute too, so getComputedStyle(button).display is
-    // "none" outside its state. One enabled primary per state (AT-DOM-0).
-    var key = inPair ? "PAIR-" + (state.pair === "searching" ? "idle" : state.pair) : state.view;
-    var prim = document.querySelectorAll("[data-owner]");
-    for (var j = 0; j < prim.length; j++) {
-      prim[j].hidden = prim[j].getAttribute("data-owner") !== key;
-    }
-    $("find-btn").disabled = state.pair === "searching";
-    $("connect-btn").disabled = state.flowBusy;
-  }
-
-  function renderTexts() {
-    var s = state.status;
-
-    // FLAG U-14 (undrawn; Owner to rule): the D-p4 search line is removed.
-    // FLAG U-13 (undrawn; Owner to rule): the D-p5 waiting lines are removed.
-
-    if (state.view === "PAIR" && state.pair === "ready") {
-      $("pair-checked").textContent = hhmm(state.lastHealthAt || Date.now());
-    }
-
-    if (state.view === "S6" && s) {
-      var t6 = when(s.verification && s.verification.at);
-      atStrong($("s6-at"), t6);
-      $("s6-google-at").textContent = t6 || "—";
-    }
-
-    if (state.view === "S7") {
-      $("example-question").textContent = "“" + exampleText() + "”";
-      renderProperty($("s7-property"));
-      if (s) {
-        var g7 = $("s7-google");
-        if (s.google_access === "verified") {
-          var t7 = when(s.verification && s.verification.at);
-          g7.textContent = "Verified" + (t7 ? " · " + t7 : "");
-          g7.className = "st-ok";
-        } else {
-          g7.textContent = "";      // FLAG U-16 (undrawn; Owner to rule)
-          g7.className = "st-bad";
-        }
-      }
-    }
-
-    if (state.view === "S8" && s) {
-      var c = s.claude || {};
-      var t8 = when(c.last_report_at);
-      atStrong($("s8-at"), t8);
-      $("s8-claude-at").textContent = t8 || "—";
-      $("s8-google-at").textContent = googleProvenAt(s) || "—";
-      var g8 = $("s8-google-st");
-      if (s.google_access === "verified") {
-        g8.textContent = "Verified";
-        g8.className = "st-ok";
+    // (1) The flow this load came back for (#return=<id>): N8, N11, N13's resolution.
+    if (C.kind === "return" && !C.settled) {
+      var match = !!(lf && C.returnId && lf.id === C.returnId);
+      if (!match) {
+        C.settled = true;                 // nothing matches: decide from the helper's state
+      } else if (lf.outcome === "pending") {
+        return { view: "CHECKING", sub: "checking" };
       } else {
-        g8.textContent = "";        // FLAG U-16 (undrawn; Owner to rule)
-        g8.className = "st-bad";
-      }
-    }
-
-    if (state.view === "F4") {
-      $("f4-cause").textContent = state.failCause;
-    }
-  }
-
-  function render() {
-    renderBar();
-    renderPanels();
-    renderTexts();
-  }
-
-  function go(view) {
-    var changed = view !== state.view;
-    if (state.view === "S4" && view !== "S4") { state.gen += 1; }   // CRP-4: leaving D-p5
-    state.view = view;
-    if (view !== "RET") { remember(view); }
-    render();
-    if (changed) {
-      var h = $("h-" + view);
-      if (h && typeof h.focus === "function") { try { h.focus(); } catch (e) { /* ignore */ } }
-    }
-  }
-
-  function pairShow(result) {
-    state.pair = result;
-    if (state.view !== "PAIR") { go("PAIR"); } else { render(); }
-  }
-
-  // ------------------------------------------------------------------ the search
-  function startSearch() {
-    state.searching = true;
-    state.searchStartedAt = Date.now();
-    state.pair = "searching";
-    state.polling = true;
-    if (state.view !== "PAIR") { go("PAIR"); } else { render(); }
-    tick(false);
-  }
-
-  function usable() {
-    return state.found && !state.refused && !!state.status;
-  }
-
-  // G-2 guard (Reviewer addendum 1; D-p10 MUST NOT "show a stale success as current"; p.17):
-  // only a report call made AFTER this run's Google verification proves the Claude connection.
-  function claudeProven(s) {
-    var c = (s && s.claude) || {};
-    if (c.verified !== true) { return false; }
-    // CRP-5: Google verified now, by a verification made in THIS helper run.
-    if (s.google_access !== "verified" || !s.verification || !s.run_id ||
-        s.verification.run_id !== s.run_id) { return false; }
-    var r = toDate(c.last_report_at);
-    var v = toDate(s.verification && s.verification.at);
-    return !!(r && v && r.getTime() > v.getTime());
-  }
-
-  // A verified Google connection restores the verified state (p.8, p.17): S8 when Claude has
-  // made a report call, else S7 when the page was on S7 before the reload, else S6.
-  function restoreVerified() {
-    var s = state.status;
-    if (!s || s.google_access !== "verified") { return false; }
-    if (claudeProven(s)) { go("S8"); }
-    else if (state.restoreTo === "S7") { go("S7"); }
-    else { go("S6"); }
-    state.restoreTo = null;
-    return true;
-  }
-
-  // FLAG U-9: a refused page or a search that runs past SEARCH_FAIL_MS shows "Helper not found"
-  // (or "Permission denied"), the existing failure handling, with no new copy.
-  function searchFailed() {
-    state.searching = false;
-    return lnaDenied().then(function (denied) {
-      if (state.view === "PAIR" || state.view === "RET") {
-        pairShow(denied ? "denied" : "notfound");
-      }
-    });
-  }
-
-  function afterPoll() {
-    var v = state.view;
-    if (v === "RET") { return afterReturn(); }
-    if (v === "S4" && state.flow) { return checkFlow(); }
-    if (v === "PAIR") {
-      if (usable()) {
-        if (state.pair === "ready") { render(); return; }
-        state.searching = false;
-        if (!restoreVerified()) { pairShow("ready"); }
-        return;
-      }
-      if (state.searching) {
-        if (state.found && state.refused) {
-          // N-4: no raw code in user text; the HTTP code goes to the console only.
-          if (typeof console !== "undefined" && console.warn) {
-            console.warn("helper refused /status: HTTP " + state.refused);
-          }
-          return searchFailed();
+        C.settled = true;
+        if (lf.outcome === "completed") {
+          C.afterFlow = true;             // N8
+        } else if (lf.outcome === "interrupted") {
+          // s3.4: decide from saved state: access saved -> N8 (no new consent); not saved -> N11
+          if (ga === "not_connected") { C.failed = true; } else { C.afterFlow = true; }
+        } else if (lf.outcome === "cancelled" || lf.outcome === "failed") {
+          C.failed = true;                // N11
         }
-        if (Date.now() - state.searchStartedAt >= SEARCH_FAIL_MS) { return searchFailed(); }
+        // "superseded" (another start replaced it): the helper's state decides
       }
-      render();
-      return;
     }
-    if (v === "S6" || v === "S7" || v === "S8") {
-      var s = state.status;
-      // FLAG U-17: after disconnect, show reconnect step (brief p.8/p.12; Owner to rule)
-      if (s && s.google_access === "not_connected") { state.pair = "ready"; go("PAIR"); return; }
-      if (s && CREDENTIAL_STORE_DOWN[s.google_access] && !signinSaved(s)) {   // C-5
-        failGoogle(SIGNIN_NOT_SAVED);
-        return;
+    if (C.failed) {
+      // N11 NotFinished stays while the helper still names this flow as the latest one.
+      if (lf && lf.id === C.returnId) { return { view: "NOTFINISHED" }; }
+      C.failed = false;
+    }
+
+    // (2) R1/UX-16: a FRESH access test at this load (not while a sign-in is pending).
+    if (S.loadVerify) {
+      S.loadVerify = false;
+      if (ga !== "not_connected" && ga !== "keychain_locked" && ga !== "keychain_unavailable" &&
+          !(lf && lf.outcome === "pending")) {
+        return { verify: true };
       }
-      // FLAG U-12: D-p8 or D-p9 -> D-p10 on a proven report (p.17 + G-2 guard); never from 4a or D-p5.
-      if ((v === "S6" || v === "S7") && s && claudeProven(s)) { go("S8"); return; }
     }
-    render();
-  }
 
-  // ------------------------------------------------------------------ the return from Google
-  // FLAG U-10: a sign-in that fails, or a test call that fails before D-p8, goes to F4 (the
-  // existing failure handling, no new copy; not drawn in the design).
-  function failGoogle(cause) {
-    state.flow = null;
-    hideFallback();
-    state.failCause = cause;
-    go("F4");
-  }
+    // (3) N15: LaunchFailed stays while ready, until Claude is frontmost at a later read (UX-22).
+    if (S.view === "LAUNCHFAILED" && s.ready === true) {
+      return front(s) ? { view: readyView() } : { view: "LAUNCHFAILED" };
+    }
 
-  // Judge the helper's last sign-in (p.8 "המוצר מזהה תוצאה ומחזיר למסע"; p.17). `lf` must be the
-  // flow in question. Returns true when a frame was decided.
-  function judgeFlow(s, lf) {
-    if (!lf || !lf.outcome || lf.outcome === "pending") { return false; }
-    if (lf.outcome === "cancelled") { state.flow = null; hideFallback(); go("F3"); return true; }
-    if (lf.outcome === "superseded") { failSuperseded(); return true; }
-    if (lf.outcome !== "completed") {
-      if (lf.detail === "timeout") {
-        // AWAITING OWNER (O-1)
-        failGoogle("We didn’t hear back from Google in time. Nothing new was connected.");
-      } else if (lf.detail === "keychain_write_failed") {
-        failGoogle(SIGNIN_NOT_SAVED);
-      } else {
-        // AWAITING OWNER (O-1)
-        failGoogle("Google’s answer could not be completed, so nothing new was connected.");
+    // (4) KPI-3: ready = verified AND property_present AND claude_loaded.ok (the helper's word).
+    if (s.ready === true) { return { view: readyView() }; }
+
+    // (5) R-resume: a pending sign-in keeps its screen live (never a dead C, UX-14).
+    if (lf && lf.outcome === "pending" && ga !== "verified") {
+      if (S.view === "C" || S.view === "R2" || S.view === "NOTFINISHED") { return { view: S.view }; }
+      return { view: "C" };
+    }
+
+    if (ga === "verified") {
+      // F-11 / UX-7: the allowed property is missing -> never D or R1; interim N11.
+      if (s.property_present !== true) { return { view: "NOTFINISHED" }; }
+      // verified, Claude has not loaded GrabMCP yet
+      if (C.afterFlow && !S.finishingExpired) {
+        startFinishing();
+        return { view: "CHECKING", sub: "finishing" };
       }
-      return true;
+      if (S.waitClaude) { return { view: "WAITING", sub: "claude" }; }
+      return { view: "NOTLOADED" };
     }
-    // completed: wait for the helper's real test call (D-p6: "A real test call runs, then
-    // step 5").
-    // p.8: the verified state and its matching next step; Claude counts only under the G-2 guard.
-    if (s.google_access === "verified") {
-      state.flow = null; hideFallback(); go("S6"); return true;   // UD-5: D-p8; U-12 then advances
+    if (ga === "unverified") {
+      // A connection exists that nothing in this helper run has checked.
+      if (C.afterFlow && lf && lf.outcome === "completed" && !S.justVerified) {
+        // N8: the helper verifies a completed flow itself; wait for it (bounded), then ask.
+        if (!S.unverifiedSince) { S.unverifiedSince = Date.now(); }
+        if (Date.now() - S.unverifiedSince < FINISHING_MS) { return { view: "CHECKING", sub: "checking" }; }
+      }
+      if (S.justVerified) { return { view: "TEMPERROR" }; }
+      return { verify: true };
     }
-    if (CREDENTIAL_STORE_DOWN[s.google_access] && !signinSaved(s)) {
-      failGoogle(SIGNIN_NOT_SAVED);
-      return true;
+    if (ga === "not_verified") {
+      var why = s.google_access_reason;
+      if (why === "revoked_or_unrenewable") { return { view: "R2" }; }      // s4.3: only confirmed
+      if (why === "transient" || why === "unknown") { return { view: "TEMPERROR" }; }  // N12, F-5
+      if (S.justVerified) { return { view: "TEMPERROR" }; }
+      return { verify: true };            // a failure recorded by an earlier helper run
     }
-    // CRP-1: "not_verified" is final only when it belongs to the CURRENT connection; a stale one
-    // from an earlier attempt means the test call is still running: keep waiting.
-    if (s.google_access === "not_verified" && s.verification &&
-        s.verification.connection_id === s.connection_id) {
-      // AWAITING OWNER (O-1)
-      failGoogle("You signed in, but Google did not confirm access to your Analytics.");
-      return true;
-    }
-    return false;
+    if (ga === "not_connected") { return { view: "C" }; }
+    // keychain_locked / keychain_unavailable / anything else: no p3 screen of its own. Retry;
+    // never ask for reconnect or install (s4.2, s4.3). FLAG to the lead.
+    return { view: "TEMPERROR" };
   }
 
-  function failSuperseded() {
-      // AWAITING OWNER (O-1)
-      failGoogle("A newer sign-in attempt replaced this one, perhaps from another tab. " +
-        "Nothing new was connected.");
-  }
-
-  function flowTimedOut(startedAt) {
-    if (Date.now() - startedAt <= FLOW_TIMEOUT_MS) { return false; }
-    // AWAITING OWNER (O-1)
-    failGoogle("We didn’t hear back from the Google sign-in. If you closed that tab, try " +
-      "again.");
-    return true;
-  }
-
-  // The site tab waits on D-p5 while Google's screens run in their own tab, and advances by
-  // itself on the result (p.8). D-p5 shows only its drawn content while waiting (U-13).
-  function checkFlow() {
-    var s = state.status;
-    var lf = s && s.last_flow;
-    // CRP-6: a newer sign-in (another tab) replaced this one. Judged only on a /status asked for
-    // after this flow started, so an answer already in flight is never misread.
-    if (s && lf && lf.id && lf.id !== state.flow.id && state.statusReqAt > state.flow.startedAt) {
-      failSuperseded();
-      return;
-    }
-    if (s && lf && lf.id === state.flow.id && judgeFlow(s, lf)) { return; }
-    if (flowTimedOut(state.flow.startedAt)) { return; }
-    render();
-  }
-
-  // The fallback path: the load came through the callback page's return action (the tab could
-  // not close itself). Decide the right frame from /status: never S0 (p.8, p.18).
-  // FLAG U-2: the site side of the callback return (the callback page itself is the helper's).
-  function afterReturn() {
-    if (!usable()) {
-      if (state.found && state.refused) { return searchFailed(); }
-      if (Date.now() - state.searchStartedAt >= SEARCH_FAIL_MS) { return searchFailed(); }
-      render();
-      return;
-    }
-    var s = state.status;
+  function onStatus(s) {
+    S.reached = true;
+    S.status = s;
+    S.waitGrab = false;
     var lf = s.last_flow;
-    // This load keeps no flow id (no storage, see STATE_KEY): the helper's latest sign-in is
-    // judged.
-    if (judgeFlow(s, lf)) { return; }
-    if (!lf) {
-      // No sign-in to judge: show what the helper proves.
-      if (s.google_access === "verified") { go("S6"); return; }   // UD-5: D-p8; U-12 then advances
-      go("S4");
+    if (S.startedFlowId && !(lf && lf.id === S.startedFlowId && lf.outcome === "pending")) {
+      S.startedFlowId = null;
+    }
+    // ONE live surface: the helper's owner tab (WP-H4, NEW-E2).
+    var own = s.owner;
+    if (own && typeof own === "object") {
+      if (own.is_you === true) {
+        if (!S.isOwner) { S.isOwner = true; announce("owner"); }
+      } else {
+        S.isOwner = false;
+        if (own.exists === true) { standDown(); return null; }
+      }
+    }
+    var d = decide(s);
+    if (s.google_access !== "unverified") { S.unverifiedSince = 0; }
+    if (d.verify) { return runVerify(); }
+    go(d.view, d);
+    return null;
+  }
+
+  // A read's answer is acted on only if nothing made it stale meanwhile.
+  function stale(g) {
+    return g !== S.gen || S.perm === "denied" || S.away || (S.view === "A" && !S.downloaded);
+  }
+
+  // The helper did not answer (or refused /status).
+  function onSilent() {
+    var v = S.view;
+    if (v === "PASSIVE") { return; }
+    if (v === "WAITING" && S.waitGrab) { return; }       // "Waiting for GrabMCP..." until it answers
+    if (S.downloaded && (v === "A" || v === "B" || v === "NOTDETECTED" || v === "LNABLOCKED")) {
+      // Download-click polling (N4/N5): B, then NotDetected after the bound; polling goes on.
+      // From A (granted) or LnaBlocked (just granted) this was the "/health FIRST" read.
+      if (v === "A" || v === "LNABLOCKED") { S.dlStartedAt = Date.now(); go("B"); return; }
+      if (v === "B" && Date.now() - S.dlStartedAt >= DOWNLOAD_BOUND_MS) { go("NOTDETECTED"); }
       return;
     }
-    if (flowTimedOut(loadedAt)) { return; }
-    render();
-  }
-
-  function returnTo() {
-    return location.origin + location.pathname + RETURN_HASH;
-  }
-
-  function hideFallback() {
-    $("signin-fallback").hidden = true;
-    $("signin-link").removeAttribute("href");
-  }
-
-  // D-p5 "Continue to Google" opens Google's screens in their own tab (p.8 "המשך פותח את האישור");
-  // this tab stays on D-p5 and follows the result. The callback page closes itself; when it
-  // cannot, its one return action brings the user back with "#return".
-  function startConnect() {
-    if (state.flowBusy) { return; }
-    // Open the tab NOW, inside the click, so the browser does not block it as a pop-up. No
-    // placeholder text is written into it (the Reviewer removed "Opening Google…").
-    // FLAG U-19: a re-click of "Continue to Google" while a Google tab is open leaves the earlier tab open; finishing consent there reaches a stopped flow (helper supersedes it). Undrawn; Owner to rule. CRP-2 close() is ineffective with opener=null (measured, probe_close.py).
-    var w = null;
-    try { w = window.open("", "_blank"); } catch (e) { w = null; }
-    if (w) { try { w.opener = null; } catch (e) { /* ignore */ } }
-    var gen = state.gen;                       // CRP-4
-    state.flowBusy = true;
-    state.flow = null;
-    hideFallback();
-    // FLAG U-13 (undrawn; Owner to rule): the "Starting the Google sign-in" line is removed.
-    render();
-
-    // Helper >= 1.1.0 takes `return_to`; 1.0.3 gets today's empty body (INTERFACE-03 §3, §4).
-    var body = versionAtLeast(state.version, RETURN_TO_SINCE) ?
-      JSON.stringify({ return_to: returnTo() }) : "{}";
-
-    call("POST", "/connect/start", body).then(function (res) {
-      state.flowBusy = false;
-      if (gen !== state.gen) {
-        // CRP-4: the page left D-p5 (e.g. "Back") while the start was in flight: drop it.
-        if (w) { try { w.close(); } catch (e) { /* ignore */ } }
-        render();
-        return;
-      }
-      var d = res.data || {};
-      if (res.network || res.status !== 200 || typeof d.authorize_url !== "string" ||
-          typeof d.flow_id !== "string") {
-        if (w) { try { w.close(); } catch (e) { /* ignore */ } }
-        // N-4: a cause line, never a raw code.
-        failGoogle(res.network ?
-          // AWAITING OWNER (O-1)
-          "We couldn’t reach the extension, so the sign-in didn’t start. Make sure Claude " +
-          "Desktop is open." :
-          // AWAITING OWNER (O-1)
-          "The extension couldn’t start the Google sign-in. Try again in a moment.");
-        return;
-      }
-      state.flow = { id: d.flow_id, startedAt: Date.now() };
-      var opened = false;
-      if (w && !w.closed) {                    // CRP-3: a tab the user already closed is not "opened"
-        try { w.location.replace(d.authorize_url); opened = true; } catch (e) { opened = false; }
-      }
-      if (!opened) {
-        // FLAG p.17 "מגבלת דפדפן מקבלת חלופת חזרה ברורה": the pop-up was blocked; the existing
-        // fallback link (O-1) opens Google's screens.
-        $("signin-link").href = d.authorize_url;
-        $("signin-fallback").hidden = false;
-      }
-      if (!state.polling) { state.polling = true; }
-      render();
-      tick(false);
-    });
-  }
-
-  function toBeforeGoogle() {
-    state.flow = null;
-    hideFallback();
-    if (!state.polling) { state.polling = true; tick(false); }
-    go("S4");
-  }
-
-  // ------------------------------------------------------------------ copy the example (N-7)
-  // FLAG backlog: copy feedback not in design D-p9 (Owner 04:48). The copy runs; no result line.
-  function copyExample() {
-    var text = exampleText();
-    try {
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-        navigator.clipboard.writeText(text).then(null, function () { /* no visible line */ });
-      }
-    } catch (e) { /* no visible line */ }
+    if (S.startedFlowId) {
+      // "a loaded page with a flow it started" (N13): decide like its #return landing.
+      S.ctx = newCtx("return", S.startedFlowId);
+      S.startedFlowId = null;
+    }
+    if (S.ctx.kind === "return" && !S.ctx.settled) {
+      // N13: ONLY while the helper is silent (A-4: beats R3). Exact copy only on the
+      // correlated record (C-11), which only an earlier read of this page can have shown.
+      var lf = S.status && S.status.last_flow;
+      var exact = !!(lf && lf.id === S.ctx.returnId && lf.cause === "claude_closed");
+      go("INTERRUPTED", { variant: exact ? "exact" : "neutral" });
+      return;
+    }
+    go("R3");
   }
 
   // ------------------------------------------------------------------ the polling loop
-  var timer = null;
-  var running = false;
+  var pollTimer = null, running = false, again = false, recheckWanted = false;
 
-  function tick(once) {
-    if (!state.polling) { return Promise.resolve(); }
-    if (running) {
-      if (!once) { schedule(); }
-      return Promise.resolve();
-    }
-    running = true;
-    return call("GET", "/health").then(function (h) {
-      var ok = !h.network && h.status === 200 && h.data && h.data.helper === "running";
-      state.found = !!ok;
-      if (!ok) {
-        state.status = null;
-        state.refused = null;
-        return null;
-      }
-      state.version = typeof h.data.version === "string" ? h.data.version : null;
-      var reqAt = Date.now();
-      return call("GET", "/status").then(function (s) {
-        if (s.network) {
-          state.found = false;
-          state.status = null;
-          state.refused = null;
-        } else if (s.status !== 200 || !s.data) {
-          state.refused = s.status || "?";
-          state.status = null;
-        } else {
-          state.refused = null;
-          state.status = s.data;
-          state.statusReqAt = reqAt;
-          state.lastHealthAt = Date.now();
-        }
-      });
-    }).then(function () {
-      return afterPoll();
-    }).catch(function () {
-      render();
-    }).then(function () {
-      running = false;
-      if (!once) { schedule(); }
-    });
+  function shouldPoll() {
+    if (S.away || S.perm === "denied") { return false; }
+    if (S.view === "A" && !S.downloaded) { return false; }   // N1: A makes no request
+    if (S.perm === "granted" || S.noPermModel) { return true; }
+    return S.downloaded && S.view !== "LNABLOCKED";   // prompt / unsupported: only after the click
+  }
+
+  function stopPoll() {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   }
 
   function schedule() {
-    if (timer) { clearTimeout(timer); }
-    timer = null;
-    if (!state.polling) { return; }
-    timer = setTimeout(function () { tick(false); }, TICK_MS);
+    stopPoll();
+    if (shouldPoll()) { pollTimer = setTimeout(tick, TICK_MS); }
+  }
+
+  function tickNow() {
+    stopPoll();
+    if (running) { again = true; return; }
+    tick();
+  }
+
+  function read() {
+    return call("GET", "/health").then(function (h) {
+      var ok = !h.network && h.status === 200 && h.data && h.data.helper === "running";
+      if (!ok) { return { silent: true }; }
+      S.reached = true;
+      return call("GET", "/status?tab=" + TAB).then(function (s) {
+        if (s.network || s.status !== 200 || !s.data || typeof s.data !== "object") {
+          return { silent: true };
+        }
+        return { status: s.data };
+      });
+    });
+  }
+
+  function tick() {
+    pollTimer = null;
+    if (!shouldPoll()) { return; }
+    if (S.view === "NOTDETECTED" && document.hidden) { schedule(); return; }   // N5: while visible
+    running = true;
+    var work, g = S.gen;
+    if (recheckWanted) {
+      recheckWanted = false;
+      work = runVerify();
+    } else {
+      work = read().then(function (r) {
+        if (stale(g)) { return null; }
+        return r.silent ? onSilent() : onStatus(r.status);
+      });
+    }
+    Promise.resolve(work).then(null, function () { /* the next tick decides */ }).then(function () {
+      running = false;
+      if (again) { again = false; tick(); } else { schedule(); }
+    });
+  }
+
+  // POST /verify (the fresh access test), then /status, then decide. CHECKING shows meanwhile.
+  function runVerify() {
+    if (S.verifying) { return null; }   // FX-6: never a second /verify while one is in flight
+    var g = S.gen;
+    S.verifying = true;
+    go("CHECKING", { sub: "checking" });
+    return call("POST", "/verify", "{}", VERIFY_TIMEOUT_MS).then(function (v) {
+      if (stale(g)) { S.verifying = false; return null; }
+      if (v.network) {
+        // FX-6 (KPI-5): a slow helper is not a silent one. On a timeout (or any failure to get an
+        // answer) ask /health before "can't reach": if it answers -> TempError, never R3 or Interrupted.
+        return call("GET", "/health").then(function (h) {
+          S.verifying = false;
+          if (stale(g)) { return null; }
+          if (!h.network && h.status === 200 && h.data && h.data.helper === "running") {
+            S.reached = true;
+            go("TEMPERROR");
+            return null;
+          }
+          return onSilent();
+        });
+      }
+      return call("GET", "/status?tab=" + TAB).then(function (s) {
+        S.verifying = false;
+        if (stale(g)) { return null; }
+        if (s.network || s.status !== 200 || !s.data || typeof s.data !== "object") {
+          return onSilent();
+        }
+        S.justVerified = true;
+        try { onStatus(s.data); } finally { S.justVerified = false; }
+        return null;
+      });
+    });
+  }
+
+  // ------------------------------------------------------------------ N8 "Finishing setup..."
+  var finishTimer = null;
+  function startFinishing() {
+    if (S.finishStarted) { return; }
+    S.finishStarted = true;
+    finishTimer = setTimeout(function () {
+      finishTimer = null;
+      S.finishingExpired = true;
+      tickNow();                       // -> N10 NotLoaded unless ready by now
+    }, FINISHING_MS);
+  }
+
+  // ------------------------------------------------------------------ N12 TempError back-off
+  var temp = { active: false, n: 0, timer: null };
+  function tempEnsure() {
+    if (!temp.active) { temp.active = true; temp.n = 0; }
+    if (!temp.timer && !S.verifying) { tempSchedule(); }
+  }
+  function tempSchedule() {
+    var ms = temp.n < TEMP_DELAYS_MS.length ? TEMP_DELAYS_MS[temp.n] : TEMP_EVERY_MS;
+    temp.timer = setTimeout(tempFire, ms);
+  }
+  function tempFire() {
+    temp.timer = null;
+    if (S.view !== "TEMPERROR") { return; }
+    if (temp.n >= TEMP_DELAYS_MS.length && document.hidden) { tempSchedule(); return; }
+    temp.n += 1;
+    recheck();
+  }
+  function tempStop() {
+    temp.active = false;
+    temp.n = 0;
+    if (temp.timer) { clearTimeout(temp.timer); temp.timer = null; }
+  }
+  function recheck() {
+    if (temp.timer) { clearTimeout(temp.timer); temp.timer = null; }
+    recheckWanted = true;
+    tickNow();
+  }
+
+  // ------------------------------------------------------------------ owner tab and stand-down
+  var chan = null;
+  function openChannel() {
+    if (chan || typeof BroadcastChannel !== "function") { return; }
+    try {
+      chan = new BroadcastChannel(CHANNEL_NAME);
+      chan.onmessage = onPeer;
+    } catch (e) { chan = null; }
+  }
+  function closeChannel() {
+    if (chan) { try { chan.close(); } catch (e) { /* ignore */ } chan = null; }
+  }
+  function announce(kind) {
+    if (chan) { try { chan.postMessage({ t: kind, tab: TAB }); } catch (e) { /* ignore */ } }
+  }
+  var beforePassive = null;
+  function standDown() {
+    S.isOwner = false;
+    if (S.view !== "PASSIVE") { beforePassive = S.view; }
+    if (finishTimer) { clearTimeout(finishTimer); finishTimer = null; }
+    go("PASSIVE");
+  }
+  function onPeer(ev) {
+    var m = ev && ev.data;
+    if (!m || typeof m !== "object" || m.tab === TAB) { return; }
+    if (m.t === "owner") {
+      if (S.view !== null) { standDown(); }
+    } else if (m.t === "release" && S.view === "PASSIVE") {
+      if (shouldPoll()) { tickNow(); }                 // the helper says who owns now
+      else if (beforePassive) { go(beforePassive); }   // no request allowed: back where it was
+    }
+  }
+
+  // ------------------------------------------------------------------ actions
+  function newCtx(kind, returnId) {
+    return { kind: kind, returnId: returnId || "", owner: false,
+      settled: false, afterFlow: false, failed: false };
+  }
+
+  // #return=<flow_id> (or #return), #ready=<run_id>[&owner=1], else a plain load.
+  function parseHash() {
+    var h = location.hash || "";
+    if (h === "#return" || h.indexOf("#return=") === 0) {
+      var id = h.slice(8);
+      return newCtx("return", ID_RE.test(id) ? id : "");
+    }
+    if (h.indexOf("#ready=") === 0) {
+      var c = newCtx("ready", "");
+      var parts = h.slice(1).split("&");
+      for (var i = 0; i < parts.length; i++) { if (parts[i] === "owner=1") { c.owner = true; } }
+      return c;
+    }
+    return newCtx("plain", "");
+  }
+
+  // N1 "Download and install" (the anchor downloads in the same gesture; never prevented).
+  function onDownloadClick() {
+    S.downloaded = true;
+    S.dlStartedAt = Date.now();
+    if (S.perm === "denied") { stopPoll(); go("LNABLOCKED"); return; }   // N3
+    // granted: /health FIRST, B only when it is silent (UX-2, UX-17).
+    // prompt / unsupported: B at once (p3 draws B under the browser's prompt), then /health.
+    if (S.perm !== "granted") { go("B"); }
+    tickNow();
+  }
+
+  // N6 / N11 / R2: same-tab Google.
+  function startGoogle() {
+    if (S.starting) { return; }
+    S.starting = true;
+    var body = JSON.stringify({ return_to: location.origin + RETURN_TO_PATH + "#return",
+      return_mode: "redirect", tab: TAB });
+    call("POST", "/connect/start", body).then(function (r) {
+      S.starting = false;
+      var d = (r.data && typeof r.data === "object") ? r.data : {};
+      if (!r.network && r.status === 200 && typeof d.authorize_url === "string" &&
+          /^https?:\/\//.test(d.authorize_url) && typeof d.flow_id === "string") {
+        S.startedFlowId = d.flow_id;
+        S.gen += 1;
+        S.away = true;
+        stopPoll();
+        setTimeout(function () { if (S.away) { S.away = false; tickNow(); } }, AWAY_RESUME_MS);
+        location.assign(d.authorize_url);
+        return;
+      }
+      if (!r.network && r.status === 409 && d.error === "not_owner") { standDown(); return; }
+      tickNow();                         // silent -> R3; otherwise the helper's state decides
+    });
+  }
+
+  // "Open Claude Desktop" on N5, N13, R3 (contract s5.4): the browser link, then p3's
+  // "Waiting for GrabMCP..." while polling goes on.
+  function openClaudeLinkAndWait() {
+    location.href = CLAUDE_LINK;
+    S.waitGrab = true;
+    go("WAITING", { sub: "grabmcp" });
+  }
+
+  // "Open Claude Desktop" on D, R1 and NotLoaded (contract s5.4): the helper's open call, made from
+  // these three click handlers only (T-STATIC-ONE-CALLER). No timer, load or retry path calls it.
+  function openClaudeViaHelper(fromNotLoaded) {
+    if (S.opening) { return; }
+    S.opening = true;
+    if (fromNotLoaded) {
+      S.waitClaude = true;
+      go("WAITING", { sub: "claude" });        // p3: "Waiting for Claude Desktop..."
+    }
+    call("POST", "/claude/open", "{}", OPEN_TIMEOUT_MS).then(function (r) {
+      S.opening = false;
+      if (!r.network && r.status === 200 && r.data && typeof r.data.opened === "boolean") {
+        if (r.data.opened) { return; }         // Claude is in front; NotLoaded keeps waiting
+        if (fromNotLoaded) {                   // UX-19: a failed open from N10 returns to N10
+          S.waitClaude = false;
+          tickNow();
+          return;
+        }
+        if (S.status && S.status.ready === true) { go("LAUNCHFAILED"); return; }   // N15
+        tickNow();
+        return;
+      }
+      // Refused (409 not_verified, 429 rate_limited, 403) or no answer: never LaunchFailed (UX-15).
+      if (fromNotLoaded) { S.waitClaude = false; }
+      tickNow();
+    });
   }
 
   // ------------------------------------------------------------------ controls
-  $("download-link").addEventListener("click", function () { go("S1"); });   // the download proceeds
-  $("received-btn").addEventListener("click", function () { go("S1"); });
-  // FLAG K-1: "I've finished installing" kept as drawn; the brief p.8 says the product detects
-  // completion. Detection starts at "Find the helper" (Reviewer Q2).
-  $("installed-btn").addEventListener("click", function () {                // D-p3 -> D-p4, no request
-    state.pair = "idle";
-    go("PAIR");
-  });
-  $("find-btn").addEventListener("click", startSearch);                     // N-1: the first request
-  $("f1-retry-btn").addEventListener("click", startSearch);
-  $("denied-retry-btn").addEventListener("click", startSearch);
-  // FLAG U-7 (target: the existing installer download) + FLAG A-4: "Download the installer" also
-  // shows D-p3.
-  $("f1-install-link").addEventListener("click", function () {              // the download proceeds
-    state.searching = false;
-    go("S1");
-  });
-  $("continue-btn").addEventListener("click", function () { go("S4"); });
-  // FLAG U-6: "Back" -> the previous frame, D-p4 "Helper ready" (lead 04:29).
-  $("back-btn").addEventListener("click", function () {
-    state.flow = null;
-    hideFallback();
-    state.pair = "ready";
-    go("PAIR");
-  });
-  $("connect-btn").addEventListener("click", startConnect);
-  // FLAG T-CLAUDE-OPEN: "Next: open Claude Desktop" shows D-p9; opening the app is not proven.
-  $("next-claude-btn").addEventListener("click", function () { go("S7"); });
-  $("copy-btn").addEventListener("click", copyExample);
-  $("f3-retry-btn").addEventListener("click", toBeforeGoogle);   // FLAG I-3: 4a "Try again" -> D-p5 (the map arrow)
-  $("f4-retry-btn").addEventListener("click", toBeforeGoogle);
-  // No-ops: drawn controls whose target no frame or brief defines (lead interim rules).
-  function noop(e) { if (e && e.preventDefault) { e.preventDefault(); } }
-  $("help-link").addEventListener("click", noop);         // FLAG U-7 (Help)
-  $("get-claude").addEventListener("click", noop);        // FLAG U-7 (Get Claude Desktop)
-  $("steps-link").addEventListener("click", noop);        // FLAG U-7 (Steps for your browser)
-  $("cancel-setup-link").addEventListener("click", noop); // FLAG U-4 (Cancel setup)
-  $("manage-btn").addEventListener("click", noop);        // FLAG K-5 pending Reviewer
-
-  // ------------------------------------------------------------------ the first frame
-  // N-1: no request to 127.0.0.1 on a plain load.
-  // A-8: the #return load is the user's click on the callback "Return to grabmcp"; within N-1 per Reviewer ruling 2026-10-07 05:39:54 (A-8). FLAG U-18: #return opened in another browser or after the permission was revoked is undrawn (Owner to rule).
-  if (location.hash === RETURN_HASH) {
-    try { history.replaceState(null, "", location.pathname + location.search); } catch (e) { /* keep */ }
-    state.view = "RET";
-    state.searching = true;
-    state.searchStartedAt = Date.now();
-    state.polling = true;
-    render();
-    tick(false);
-  } else {
-    // FLAG K-2: no detection before a click (N-1), so an active install never skips the
-    // download on D-p2. FLAG U-11: a reload restores the verified state at the first click.
-    var last = remembered();
-    if (last === "S1") {
-      state.view = "S1";
-    } else if (last && last !== "S0") {
-      // A reload or reopen after the install: the pair frame, whose click restores the
-      // verified state (p.8, p.17), at the first click N-1 allows.
-      state.view = "PAIR";
-      state.pair = "idle";
-      state.restoreTo = last;
-    }
-    render();
+  // UXB-6: remember which section a click came from, so show() can move focus when the click
+  // hides that section (and only then).
+  function on(id, fn) {
+    var el = $(id);
+    if (!el) { return; }
+    el.addEventListener("click", function (e) {
+      var sec = el.closest ? el.closest("section[data-state]") : null;
+      focusIntent = sec ? { section: sec, at: Date.now() } : null;
+      return fn(e);
+    });
   }
+
+  on("b-dl", onDownloadClick);
+  // b-again ("Download it again" on B) is a download link: the browser serves the file again.
+  on("b-redl", function () {                 // N5 -> the file again AND back to B (N4), UX-12
+    var a = $("b-dl");
+    if (a) { a.click(); }                    // runs onDownloadClick: a new 10-minute bound
+    if (S.view !== "LNABLOCKED") { go("B"); }
+  });
+  on("b-how", function () {
+    var box = $("howbox");
+    if (box) { box.hidden = false; }
+  });
+  on("b-ocd", openClaudeLinkAndWait);        // N5
+  on("b-oc2", openClaudeLinkAndWait);        // N13
+  on("b-open", openClaudeLinkAndWait);       // R3
+  on("b-again2", function () {               // N15 "Try again": the browser link (contract s5.4)
+    location.href = CLAUDE_LINK;
+  });
+  on("b-google", startGoogle);               // N6
+  on("b-cont", startGoogle);                 // N11
+  on("b-rec", startGoogle);                  // R2
+  on("b-try", recheck);                      // N12 "Try now"
+  on("b-claude", function () { openClaudeViaHelper(false); });      // N9 D
+  on("b-claude-r1", function () { openClaudeViaHelper(false); });   // R1
+  on("b-oc", function () { openClaudeViaHelper(true); });           // N10 NotLoaded
+  on("b-inst", function (e) {                // R3 "Install it" -> N1
+    if (e && e.preventDefault) { e.preventDefault(); }
+    S.ctx = newCtx("plain", "");
+    S.downloaded = false;
+    S.noPermModel = false;
+    S.gen += 1;
+    stopPoll();
+    go("A");
+  });
+
+  // ------------------------------------------------------------------ resume (R-resume)
+  document.addEventListener("visibilitychange", function () {
+    requery();
+    if (!document.hidden && S.view !== null && shouldPoll()) { tickNow(); }
+  });
+  window.addEventListener("focus", requery);
+  window.addEventListener("pageshow", function (e) {
+    if (!e || !e.persisted) { return; }
+    // Back from Google or a back-forward-cache restore: re-read /status; never a dead C (UX-14).
+    // The id this page released on pagehide can never own again (helper FX-12): a NEW id, before
+    // the re-read. The old one is simply abandoned; nothing else is sent.
+    TAB = newTabId();
+    S.isOwner = false;
+    S.away = false;
+    S.starting = false;
+    S.opening = false;
+    openChannel();
+    requery();
+    if (S.view !== null && shouldPoll()) { tickNow(); }
+  });
+  window.addEventListener("pagehide", function () {
+    // FX-3 (INTERFACE-05 s6.3): tell the helper this document left, so a reload or a Back from
+    // Google lands on a live screen at once. Here and nowhere else. FX-13 (CR5-8): sent whenever
+    // THIS page has reached the helper (whatever the permission value), never by a page that has
+    // not: the beacon only follows requests a granted load or the user's click already caused.
+    // A string body is text/plain: no preflight. Payload exactly {"tab":"<id>"} (KPI-4).
+    if (S.reached && navigator.sendBeacon) {
+      try { navigator.sendBeacon(BASE + "/release", JSON.stringify({ tab: TAB })); } catch (e) { /* ignore */ }
+    }
+    if (S.isOwner) { announce("release"); }
+    closeChannel();
+    stopPoll();
+  });
+
+  // ------------------------------------------------------------------ the first decision
+  function boot() {
+    S.ctx = parseHash();
+    if (S.perm === "granted") {
+      if (S.ctx.kind === "return") { go("CHECKING", { sub: "checking" }); }   // N8 provisional
+      else { S.loadVerify = true; }
+      tickNow();
+      return;
+    }
+    // FX-14 (Reviewer UXB-5 ruling): no permission model means no prompt can be raised, so a
+    // #return / #ready load goes exactly as a granted one (never A for saved access, plan s3.4).
+    // A plain load, and "prompt" on any load, stay on A with no request.
+    if (S.perm === "unsupported" && S.ctx.kind !== "plain") {
+      S.noPermModel = true;
+      go("CHECKING", { sub: "checking" });
+      if (S.ctx.kind !== "return") { S.loadVerify = true; }
+      tickNow();
+      return;
+    }
+    // N3 / UX-2: a #ready or #return load while denied is LnaBlocked, never A.
+    if (S.perm === "denied" && S.ctx.kind !== "plain") { go("LNABLOCKED"); return; }
+    go("A");                                   // N1: no request on load
+  }
+
+  openChannel();
+  setInterval(requery, PERM_REQUERY_MS);
+  queryPerm().then(function (st) {
+    S.perm = st;
+    boot();
+  });
 })();

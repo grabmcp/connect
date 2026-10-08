@@ -1,250 +1,100 @@
-/* The approved design's look (frames D-p2..D-p10): light, drawn for macOS. No web font and no
-   UI library; system fonts only. */
-:root {
-  --page: #ffffff;
-  --text: #1b1f24;
-  --muted: #4a5058;
-  --line: #d5d9de;
-  --soft: #f3f5f7;
-  --blue: #0b4fb3;
-  --blue-text: #ffffff;
-  --blue-soft: #eef3fb;
-  --blue-line: #c8d5ea;
-  --ok: #0d6a4e;
-  --ok-soft: #f0f7f3;
-  --ok-pill: #dcefe6;
-  --warn: #a4501b;
-  --warn-text: #7a3510;
-  --warn-soft: #fff6ef;
-  --warn-line: #e3b48c;
-  --pill-done: #eceef1;
-  color-scheme: light;
+/* WP-S1 (PLAN-05 v1.1): the visual style of the Owner-approved prototype p3
+   (GA4-Connection-Journey-v2-prototype-r3-p3.html), adapted for a real page: p3's site area
+   (header with progress, then the stage) becomes the page itself. Not shipped: the narration
+   rail, scenario chips, fault buttons, fake browser bar and the placeholder (.ph / .overlay)
+   styles. No web font and no UI library: p3's own fallback stacks (system fonts) only. */
+:root{
+  --bg:#ECEEF2; --surface:#FFFFFF; --surface-2:#F5F6F8; --ink:#16191D; --ink-2:#3D434B; --muted:#5A616B;
+  --line:#D2D6DC; --accent:#1F4FB8; --accent-ink:#FFFFFF; --ok:#0B5A43; --ok-bg:#E3F1EC;
+  --warn:#7A3604; --warn-bg:#FBEFE4; --info-bg:#F2F5FB; --info-line:#B9C7E6;
+  --f-ui:system-ui,-apple-system,'Segoe UI',sans-serif;
 }
-* { box-sizing: border-box; }
-/* N-2: the `hidden` attribute must beat every display rule. */
-[hidden] { display: none !important; }
-body {
-  margin: 0;
-  background: var(--page);
-  color: var(--text);
-  font: 17px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-}
-.site { max-width: 90rem; margin: 0 auto; }
+@media (prefers-color-scheme: dark){:root{
+  --bg:#111418; --surface:#1A1E24; --surface-2:#20252C; --ink:#E8EBEF; --ink-2:#C2C8D0; --muted:#9AA2AD;
+  --line:#343B45; --accent:#7EA2F2; --accent-ink:#0E1420; --ok:#7DD3B0; --ok-bg:#163229;
+  --warn:#F2B58A; --warn-bg:#3A2616; --info-bg:#1B2436; --info-line:#33476F; color-scheme:dark }}
+*{box-sizing:border-box}
+/* The `hidden` attribute beats every display rule: one visible section at a time. */
+[hidden]{display:none!important}
+body{margin:0;background:var(--surface);color:var(--ink);font-family:var(--f-ui);font-size:15px;line-height:1.5}
 
-/* Every frame: GrabMCP and Help */
-.topbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 1.1rem 2.4rem;
-  border-bottom: 1px solid var(--line);
-}
-.brand { font-weight: 700; font-size: 1.3rem; }
-.help { color: var(--blue); text-decoration: underline; cursor: pointer; }
+/* Site header: brand + progress (p3 .site-h, .prog) */
+.site-h{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:12px 24px;border-bottom:1px solid var(--line)}
+h1.brand{margin:0;font-size:18px;font-weight:600;line-height:inherit}
+.prog{display:flex;flex-wrap:wrap;gap:18px;list-style:none;margin:0;padding:0;font-size:13px;color:var(--muted)}
+.prog li{display:flex;align-items:center;gap:7px}
+.dot{width:22px;height:22px;border-radius:999px;border:1px solid var(--line);display:inline-flex;align-items:center;justify-content:center;font-size:12px}
+/* Non-colour cues: the current step is bold, numbered and aria-current; a done step shows a check. */
+.prog .cur{color:var(--ink);font-weight:600}.prog .cur .dot{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.prog .done{color:var(--ok)}.prog .done .dot{background:var(--ok);border-color:var(--ok);color:var(--surface)}
 
-/* The five-step bar */
-.stepbar { padding: .9rem 2.4rem; border-bottom: 1px solid var(--line); }
-.stepbar ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .6rem; }
-.pill {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: .3rem .9rem;
-  font-size: .95rem;
-  color: var(--muted);
-  background: var(--page);
-}
-.pill.done { background: var(--pill-done); border-color: var(--pill-done); }
-.pill.done-ok { background: var(--ok-pill); border-color: var(--ok-pill); color: var(--ok); }
-.pill.active { border: 2px solid var(--blue); color: var(--blue); font-weight: 700; }
-.pill.active-ok { border: 2px solid var(--ok); color: var(--ok); font-weight: 700; }
-.pill.active-warn { border: 2px solid var(--warn); color: var(--warn-text); font-weight: 700; }
+/* Stage (p3 .stage, .col, .card) */
+.stage{min-height:600px;padding:36px 24px;display:flex;justify-content:center}
+.col{width:100%;max-width:600px;display:flex;flex-direction:column;gap:18px}
+.card{border:1px solid var(--line);border-radius:16px;padding:24px 26px;display:flex;flex-direction:column;gap:14px;max-width:540px;width:100%}
+.eyebrow{font-size:13px;color:var(--muted);font-weight:500}
+h2{margin:0;font-size:30px;line-height:1.25;font-weight:600;text-wrap:balance}
+h2.h26{font-size:26px}
+.center{text-align:center}
+.lead{margin:0;font-size:16px;color:var(--ink-2)}
+.ink{color:var(--ink)}
+.ink2{color:var(--ink-2)}
 
-/* Frames */
-main { padding: 2rem 2.4rem 3rem; }
-h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 .9rem; }
-h1:focus, p:focus { outline: none; }
-h1:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
-h2 { font-size: 1.35rem; line-height: 1.3; margin: 0 0 .6rem; }
-p { margin: .45rem 0; }
-.lead { color: var(--muted); }
-.narrow { max-width: 58rem; }
-.centered { max-width: 51rem; margin: 0 auto; }
-.two-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 3rem; align-items: start; }
-.col-side { min-width: 0; }
-.label {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: .85rem;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin: 0 0 .4rem;
-}
-.actions { margin-top: 1.3rem; display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; }
+/* Steps (p3 .steps) */
+.steps{border:1px solid var(--line);border-radius:12px}
+.steps>div{display:flex;gap:12px;padding:14px 16px}
+.steps>div+div{border-top:1px solid var(--line)}
+.num{flex-shrink:0;width:26px;height:26px;border-radius:999px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600}
+.steps span.t{font-size:15px}.steps .s{color:var(--ink-2)}
 
-/* D-p2 */
-.tools { border: 0; padding: 0; margin: 1.2rem 0 0; }
-.tools legend { font-weight: 600; font-size: .95rem; margin-bottom: .5rem; padding: 0; }
-.tool {
-  display: flex;
-  gap: .9rem;
-  align-items: center;
-  border: 1px solid var(--line);
-  border-radius: .5rem;
-  padding: .9rem 1.2rem;
-  margin: 0 0 .8rem;
-}
-.tool.selected { border: 2px solid var(--blue); }
-.tool input { width: 1.2rem; height: 1.2rem; accent-color: var(--blue); }
-.tool-sub { color: var(--muted); }
-.detect { border-top: 1px solid var(--line); margin-top: 1.2rem; padding-top: .8rem; }
-.disclosure {
-  background: var(--soft);
-  border: 1px solid var(--line);
-  border-radius: .75rem;
-  padding: 1.4rem 1.8rem 2rem;
-}
-.facts { padding-left: 1.3rem; margin: .4rem 0 1.2rem; }
-.facts li { margin: .45rem 0; }
-.under { text-align: center; color: var(--muted); font-size: .95rem; }
+/* Notes, buttons, small print, links, details (p3) */
+.note{display:flex;gap:10px;align-items:flex-start;font-size:14px;color:var(--ink-2)}
+.note svg{flex-shrink:0;margin-top:3px}
+.btn{font:inherit;font-weight:600;font-size:16px;min-height:48px;padding:0 22px;border-radius:10px;border:0;background:var(--accent);color:var(--accent-ink);cursor:pointer;width:100%}
+/* p3's "Download and install" is a link here (the download runs in the same gesture): same look. */
+a.btn{display:flex;align-items:center;justify-content:center;text-align:center;text-decoration:none}
+.btn.sec{background:var(--surface);color:var(--ink);border:1px solid var(--line);font-weight:500}
+.small{font-size:13px;color:var(--muted);text-align:center;margin:0}
+.small.start{text-align:start}
+a{color:var(--accent)}
+details{font-size:14px;color:var(--ink-2);border-top:1px solid var(--line);padding-top:10px}
+summary{cursor:pointer;color:var(--accent)}
+/* Keyboard focus stays visible (p3's focus rule). */
+.btn:focus-visible,summary:focus-visible,a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* UXB-6: a heading or status that receives focus on a state change (tabindex=-1) shows no ring. */
+[tabindex="-1"]:focus{outline:none}
 
-/* D-p3 */
-.howto { padding-left: 1.6rem; margin: .8rem 0 1rem; }
-.howto li { margin: .55rem 0; }
-.warnbox, .infobox {
-  display: flex;
-  gap: .8rem;
-  align-items: flex-start;
-  border-radius: .5rem;
-  padding: .8rem 1.4rem;
-  margin: 1rem 0 1.2rem;
-}
-.warnbox { background: var(--warn-soft); border: 1px solid var(--warn-line); color: var(--warn-text); }
-.infobox { background: var(--soft); border: 1px solid var(--line); }
-.warnbox p, .infobox p { margin: 0; }
-.icon { font-size: 1.15rem; line-height: 1.4; }
-.small-h { font-size: 1rem; margin: 1rem 0 .3rem; }
-.plain { margin: .35rem 0; }
+/* Status and waiting lines (p3 .status, .spin, waitLine) */
+.status{display:flex;gap:12px;align-items:flex-start;padding:16px 18px;background:var(--info-bg);border:1px solid var(--info-line);border-radius:12px}
+.status.plain{background:transparent;border:0;padding:0}
+.spin{width:22px;height:22px;flex-shrink:0;border-radius:999px;border:3px solid var(--info-line);border-top-color:var(--accent);animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.spin{animation:none;border-top-color:var(--accent)}}
 
-/* D-p4 */
-.announce {
-  background: var(--blue-soft);
-  border: 1px solid var(--blue-line);
-  border-radius: .6rem;
-  padding: 1rem 1.5rem;
-  margin: 1rem 0;
-}
-.announce .label { color: #2c4f7c; }
-.results { margin-top: 1.2rem; }
-.result {
-  border: 1px solid var(--line);
-  border-radius: .7rem;
-  padding: 1.3rem 1.6rem;
-  max-width: 30rem;
-}
-.result.fail { border: 2px solid var(--warn); }
-.badge {
-  display: inline-block;
-  border-radius: 999px;
-  padding: .15rem .8rem;
-  font-weight: 600;
-  font-size: .95rem;
-}
-.badge.ok { background: var(--ok-pill); color: var(--ok); }
-.badge.warn { background: var(--warn-soft); color: var(--warn-text); }
-.textlink { color: var(--blue); text-decoration: underline; cursor: pointer; }
+/* Google access card (p3 Cgoogle) */
+.pair{display:flex;justify-content:center;gap:12px;align-items:center;font-size:13px;font-weight:600}
+.pair span{padding:8px 12px;border:1px solid var(--line);border-radius:10px}
+.can{border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px}
+.can-h{font-size:14px}
+.chk{display:flex;gap:9px;align-items:flex-start}
+.chk svg{flex-shrink:0;margin-top:4px;color:var(--ok)}
+.muted{color:var(--ink-2);margin:0;font-size:14px}
+.grey{padding:11px 13px;background:var(--surface-2);border-radius:10px;font-size:14px;color:var(--ink-2)}
 
-/* D-p5 */
-.cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; margin: 1.2rem 0; }
-.card { border: 1px solid var(--line); border-radius: .6rem; padding: 1.1rem 1.5rem; }
-.card h2 { font-size: 1.2rem; margin: 0 0 .4rem; }
-.card p { margin: 0; }
+/* Result heads (p3 head(), .okhead, .warnhead, .infohead): an icon plus the heading, never colour alone */
+.okhead{display:flex;gap:14px;align-items:flex-start}
+.okhead .badge{flex-shrink:0;width:44px;height:44px;border-radius:999px;background:var(--ok-bg);color:var(--ok);display:flex;align-items:center;justify-content:center}
+.warnhead .badge{background:var(--warn-bg);color:var(--warn)}
+.infohead .badge{background:var(--info-bg);color:var(--accent)}
 
-/* D-p7, D-p8, D-p10 */
-.okbox, .failbox {
-  display: flex;
-  gap: 1.1rem;
-  align-items: flex-start;
-  border-radius: .75rem;
-  padding: 1.4rem 1.8rem;
-  margin: 0 0 1.4rem;
-}
-.okbox { border: 2px solid var(--ok); background: var(--ok-soft); }
-.okbox .icon { color: var(--ok); font-size: 1.8rem; font-weight: 700; }
-.failbox { border: 2px solid var(--warn); background: var(--warn-soft); }
-.failbox .icon { color: var(--warn-text); font-size: 1.8rem; }
-.okbox h1, .failbox h1 { margin: 0 0 .4rem; }
-.checks {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  border: 1px solid var(--line);
-  border-radius: .6rem;
-  overflow: hidden;
-  margin: 0 0 1.2rem;
-}
-.checks th {
-  text-align: left;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-weight: 400;
-  font-size: .85rem;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  background: var(--soft);
-  padding: .8rem 1.2rem;
-}
-.checks td { padding: .9rem 1.2rem; border-top: 1px solid var(--line); }
-.st-ok { color: var(--ok); font-weight: 700; }
-.st-plain { font-weight: 700; }
-.st-bad { color: var(--warn-text); font-weight: 600; }
-.st-wait { margin: .2rem 0; }
-.clock { width: 1.15em; height: 1.15em; vertical-align: -0.2em; margin-right: .3rem; color: var(--text); }
+/* Rows (p3 R1) and boxes (p3 LnaBlocked, R2) */
+.rows{border:1px solid var(--line);border-radius:12px;font-size:15px}
+.rows>div{padding:12px 16px}.rows>div+div{border-top:1px solid var(--line)}
+.box{border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;font-size:14px;color:var(--ink-2)}
+.box p{margin:0}
+.howsteps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px}
 
-/* D-p9 */
-.example-box { border: 1px solid var(--line); border-radius: .6rem; padding: 1.1rem 1.5rem; margin: 1.2rem 0; }
-.example { font-size: 1.15rem; }
-.example-box .actions { margin-top: .6rem; }
-.property { background: var(--soft); border-radius: .6rem; padding: 1.1rem 1.5rem; margin: 1.2rem 0; }
-.live-box { border: 1px solid var(--line); border-radius: .6rem; overflow: hidden; }
-.live-row { padding: .9rem 1.2rem; }
-.live-row p { margin: .1rem 0; }
-.live-row.waiting { border-top: 1px solid var(--line); background: var(--soft); }
-.small { font-size: .92rem; color: var(--muted); }
-
-/* Controls */
-.button {
-  display: inline-block;
-  font: inherit;
-  font-weight: 600;
-  padding: .65rem 1.4rem;
-  border-radius: .45rem;
-  border: 1px solid var(--blue);
-  background: var(--blue);
-  color: var(--blue-text);
-  text-decoration: none;
-  text-align: center;
-  cursor: pointer;
-  min-height: 44px;
-}
-.button.wide { display: block; width: 100%; }
-.button.secondary { background: var(--page); color: var(--text); border-color: #8d939a; }
-.button:disabled { opacity: .45; cursor: not-allowed; }
-.button:focus-visible, a:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
-a { color: var(--blue); }
-.hint { color: var(--muted); font-size: .95rem; }
-.file { overflow-wrap: anywhere; }
-.status { padding: .5rem .75rem; border-radius: .5rem; background: transparent; }
-.status:empty { display: none; }
-.status.ok { background: var(--ok-soft); color: var(--ok); font-weight: 600; }
-.status.wait { background: var(--warn-soft); color: var(--warn-text); }
-.status.bad { background: var(--warn-soft); color: var(--warn-text); }
-
-@media (max-width: 52rem) {
-  .two-col, .cards { grid-template-columns: minmax(0, 1fr); gap: 1.4rem; }
-}
-@media (max-width: 30rem) {
-  body { font-size: 16px; }
-  .topbar, .stepbar, main { padding-left: 1rem; padding-right: 1rem; }
-  h1 { font-size: 1.6rem; }
-}
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+/* Entering a state (p3 .fade) */
+.fade{animation:fd .25s ease-out}@keyframes fd{from{opacity:.4}to{opacity:1}}
+@media (prefers-reduced-motion: reduce){.fade{animation:none}}
+@media (max-width:560px){h2{font-size:24px}.stage{padding:24px 14px;min-height:520px}.site-h{padding:10px 14px}}
