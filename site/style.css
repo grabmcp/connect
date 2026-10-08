@@ -2,12 +2,17 @@
    (GA4-Connection-Journey-v2-prototype-r3-p3.html), adapted for a real page: p3's site area
    (header with progress, then the stage) becomes the page itself. Not shipped: the narration
    rail, scenario chips, fault buttons, fake browser bar and the placeholder (.ph / .overlay)
-   styles. No web font and no UI library: p3's own fallback stacks (system fonts) only. */
+   styles. No UI library. Font (lead D3, canon CANON-UIUX-05 item 1): p3's IBM Plex Sans,
+   self-hosted, IBM's unmodified woff2 files in fonts/ (SIL OFL, fonts/LICENSE.txt); only the
+   400/500/600 faces p3 loads, no 700 face (p3's <b> renders from 600); no Google Fonts request. */
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:400;font-display:swap;src:url(fonts/IBMPlexSans-Regular.woff2) format('woff2')}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:500;font-display:swap;src:url(fonts/IBMPlexSans-Medium.woff2) format('woff2')}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:600;font-display:swap;src:url(fonts/IBMPlexSans-SemiBold.woff2) format('woff2')}
 :root{
   --bg:#ECEEF2; --surface:#FFFFFF; --surface-2:#F5F6F8; --ink:#16191D; --ink-2:#3D434B; --muted:#5A616B;
   --line:#D2D6DC; --accent:#1F4FB8; --accent-ink:#FFFFFF; --ok:#0B5A43; --ok-bg:#E3F1EC;
   --warn:#7A3604; --warn-bg:#FBEFE4; --info-bg:#F2F5FB; --info-line:#B9C7E6;
-  --f-ui:system-ui,-apple-system,'Segoe UI',sans-serif;
+  --f-ui:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
 }
 @media (prefers-color-scheme: dark){:root{
   --bg:#111418; --surface:#1A1E24; --surface-2:#20252C; --ink:#E8EBEF; --ink-2:#C2C8D0; --muted:#9AA2AD;

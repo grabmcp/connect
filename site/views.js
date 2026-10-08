@@ -13,7 +13,8 @@
  *                  bar is left untouched unless `progress` is given.
  *       lnaNote    A only: false hides the browser-permission note (p3 draws it only while
  *                  the browser has not decided); true shows it. Omitted = shown.
- *       property   D: the property's display name, written as text. Omitted = unchanged.
+ *       property   D: the property's display name, written as text. Omitted or "" = the
+ *                  slot's shipped default text (UXB-3; F-9 Owner-pending).
  *       lastUsed   R1: the "Last used in Claude" text. A non-empty string fills and shows the
  *                  line; null or "" hides it (F-9: hidden when never used). Omitted = unchanged.
  *   GrabViews.progress(n)  renders ol#prog exactly as p3's progress(n); 0 empties it.
@@ -26,12 +27,13 @@
   "use strict";
 
   var STATES = ["A", "LNABLOCKED", "B", "NOTDETECTED", "C", "CHECKING", "TEMPERROR", "NOTLOADED",
-    "NOTFINISHED", "INTERRUPTED", "D", "LAUNCHFAILED", "R1", "R2", "R3", "WAITING", "PASSIVE"];
+    "NOTFINISHED", "INTERRUPTED", "D", "LAUNCHFAILED", "R1", "R2", "R3", "WAITING", "PASSIVE",
+    "ORGBLOCKED"];
 
   // p3: the progress(n) call at the top of each screen function. PASSIVE has no p3 screen: no bar.
   var PROGRESS = { A: 1, LNABLOCKED: 1, B: 1, NOTDETECTED: 1, C: 2, CHECKING: 2, TEMPERROR: 2,
     NOTLOADED: 2, NOTFINISHED: 2, INTERRUPTED: 2, D: 3, LAUNCHFAILED: 3, R1: 0, R2: 0, R3: 0,
-    PASSIVE: 0 };
+    PASSIVE: 0, ORGBLOCKED: 2 };  // ORGBLOCKED (INTERFACE-05 §8.2): TempError's p3 step
 
   // Sub-states: [attribute on the section, attribute on its parts, allowed values (first = default)].
   var SUBS = {
@@ -111,8 +113,14 @@
     if (state === "A" && opts.lnaNote !== undefined) {
       each(target.querySelectorAll('[data-part="lna-note"]'), function (e) { e.hidden = !opts.lnaNote; });
     }
-    if (state === "D" && typeof opts.property === "string" && opts.property !== "") {
-      each(target.querySelectorAll('[data-slot="property"]'), function (e) { e.textContent = opts.property; });
+    if (state === "D") {
+      // UXB-3: the slot shows THIS render's property, never an earlier one. Without a non-empty
+      // name it gets back its shipped default text, captured once (data-default) at first render.
+      var hasName = typeof opts.property === "string" && opts.property !== "";
+      each(target.querySelectorAll('[data-slot="property"]'), function (e) {
+        if (!e.hasAttribute("data-default")) { e.setAttribute("data-default", e.textContent); }
+        e.textContent = hasName ? opts.property : e.getAttribute("data-default");
+      });
     }
     if (state === "R1" && opts.lastUsed !== undefined) {
       var row = target.querySelector('[data-part="last-used"]');

@@ -29,6 +29,7 @@
   var AWAY_RESUME_MS = 10000;          // if the same-tab navigation to Google never happens
   var TEMP_DELAYS_MS = [5000, 10000, 20000];   // N12 back-off ...
   var TEMP_EVERY_MS = 30000;                   // ... then every 30 s while the page is visible
+  var READY_RECHECK_MS = 300000;       // B4/UXB-4: R1 re-checks in the background past 5 min
   var RETURN_TO_PATH = "/connect/";    // return_to = origin + "/connect/#return" (lead's task)
   var CHANNEL_NAME = "grabmcp-connect";
   var CLAUDE_LINK = "claude://";       // exactly this, never with a question (T-STATIC-NO-PROMPT)
@@ -78,6 +79,12 @@
     away: false,          // navigating to Google: no polling
     reached: false,       // FX-13: this page has had an answer from the helper (/health or /status)
     noPermModel: false,   // FX-14: #return / #ready load in a browser without the permission (unsupported)
+    keychainWait: false,  // A6/F-15: Checking held while the Mac's keychain cannot be read
+    startRefusedSig: null,// B2/F-B7: helper state when /connect/start was refused (NotFinished sticks)
+    lastVerifyAt: 0,      // B4: when this page's last /verify answered
+    kcRecoveryDone: false,// OB A6 recovery (s8.3): the one immediate /verify after a keychain wait
+    orgCleared: null,     // OB (s8.2): a last_flow id whose admin-policy failure a later /verify superseded
+    rf: null,             // OB nonce (s8.4): sent on the FIRST /status claim only; memory only
     gen: 0                // bumped when a user act or a denial makes an in-flight read stale
   };
 
@@ -252,16 +259,27 @@
       S.finishingExpired = true;
       if (finishTimer) { clearTimeout(finishTimer); finishTimer = null; }
     }
-    if (view !== "TEMPERROR" && !(view === "CHECKING" && S.verifying)) { tempStop(); }
+    S.keychainWait = !!opts.keychain || (S.keychainWait && view === "CHECKING" && S.verifying);
+    if (opts.keychain) { S.kcRecoveryDone = false; }
+    if (view !== "TEMPERROR" && !S.keychainWait && !(view === "CHECKING" && S.verifying)) { tempStop(); }
     if (view !== "WAITING") { S.waitClaude = false; S.waitGrab = false; }
     show(view, opts);
-    if (view === "TEMPERROR") { tempEnsure(); }
+    if (view === "TEMPERROR" || opts.keychain) { tempEnsure(); }
   }
 
   function readyView() {
     // D after a sign-in this page came back from (N8 -> N9); R1 for a load that finds the
     // helper ready (R1, R-resume).
     return S.ctx && S.ctx.afterFlow ? "D" : "R1";
+  }
+
+  function keychainState(ga) { return ga === "keychain_locked" || ga === "keychain_unavailable"; }
+
+  // B2: the parts of the helper's state whose change ends a refused start's NotFinished.
+  function stateSig(s) {
+    var lf = s && s.last_flow;
+    return [s && s.google_access, s && s.google_access_reason, s && s.property_present,
+      s && s.ready, lf ? lf.id + ":" + lf.outcome : ""].join("|");
   }
 
   // ------------------------------------------------------------------ the decision (plan s3, s4)
@@ -274,7 +292,13 @@
     if (C.kind === "return" && !C.settled) {
       var match = !!(lf && C.returnId && lf.id === C.returnId);
       if (!match) {
-        C.settled = true;                 // nothing matches: decide from the helper's state
+        C.settled = true;                 // nothing matches: decide from the helper's state ...
+        if (ga === "not_connected" && !(lf && lf.outcome === "pending")) {
+          // A3 (p3:403-405): ... but a landing whose flow is gone (expired, or the helper's bare
+          // "#return") with no access saved is "sign-in didn't finish", not a fresh C.
+          C.lostFlow = true;
+          C.lostSig = stateSig(s);
+        }
       } else if (lf.outcome === "pending") {
         return { view: "CHECKING", sub: "checking" };
       } else {
@@ -284,6 +308,8 @@
         } else if (lf.outcome === "interrupted") {
           // s3.4: decide from saved state: access saved -> N8 (no new consent); not saved -> N11
           if (ga === "not_connected") { C.failed = true; } else { C.afterFlow = true; }
+        } else if (lf.outcome === "failed" && lf.detail === "admin_policy_enforced") {
+          // OB (s8.2, R-OB5): the organization's policy, not an unfinished sign-in: ORGBLOCKED
         } else if (lf.outcome === "cancelled" || lf.outcome === "failed") {
           C.failed = true;                // N11
         }
@@ -294,6 +320,16 @@
       // N11 NotFinished stays while the helper still names this flow as the latest one.
       if (lf && lf.id === C.returnId) { return { view: "NOTFINISHED" }; }
       C.failed = false;
+    }
+    if (C.lostFlow) {
+      // A3: NotFinished stays until the helper's state changes (or a new start).
+      if (stateSig(s) === C.lostSig) { return { view: "NOTFINISHED" }; }
+      C.lostFlow = false;
+    }
+    if (S.startRefusedSig !== null) {
+      // B2/F-B7: a refused start keeps NotFinished until the next start or a helper state change.
+      if (stateSig(s) === S.startRefusedSig) { return { view: "NOTFINISHED" }; }
+      S.startRefusedSig = null;
     }
 
     // (2) R1/UX-16: a FRESH access test at this load (not while a sign-in is pending).
@@ -317,6 +353,14 @@
     if (lf && lf.outcome === "pending" && ga !== "verified") {
       if (S.view === "C" || S.view === "R2" || S.view === "NOTFINISHED") { return { view: S.view }; }
       return { view: "C" };
+    }
+
+    // (6) OB (s8.2): the organization blocks access. No automatic retry; "Try again" and the B4
+    // visibility re-check are the only /verify paths from here.
+    if (s.google_access_reason === "org_blocked") { return { view: "ORGBLOCKED" }; }
+    if (lf && lf.outcome === "failed" && lf.detail === "admin_policy_enforced" &&
+        ga !== "verified" && S.orgCleared !== lf.id) {
+      return { view: "ORGBLOCKED" };
     }
 
     if (ga === "verified") {
@@ -343,17 +387,26 @@
     if (ga === "not_verified") {
       var why = s.google_access_reason;
       if (why === "revoked_or_unrenewable") { return { view: "R2" }; }      // s4.3: only confirmed
+      if (why === "unknown" && S.keychainWait && !S.justVerified && !S.kcRecoveryDone) {
+        // OB A6 recovery (s8.3): after a keychain wait, an "unknown" may be the old failure:
+        // keep Checking and ask ONCE now; TempError only if that fresh /verify says "unknown".
+        S.kcRecoveryDone = true;
+        return { verify: true };
+      }
       if (why === "transient" || why === "unknown") { return { view: "TEMPERROR" }; }  // N12, F-5
       if (S.justVerified) { return { view: "TEMPERROR" }; }
       return { verify: true };            // a failure recorded by an earlier helper run
     }
     if (ga === "not_connected") { return { view: "C" }; }
-    // keychain_locked / keychain_unavailable / anything else: no p3 screen of its own. Retry;
-    // never ask for reconnect or install (s4.2, s4.3). FLAG to the lead.
+    // A6/F-15 (Owner 21:25-21:37): the Mac's keychain cannot be read. p3's Checking view, retried
+    // silently with the TempError back-off; never TempError, never any wording of ours about it.
+    // It recovers by itself when a read succeeds.
+    if (keychainState(ga)) { return { view: "CHECKING", sub: "checking", keychain: true }; }
+    // anything else unknown: no p3 screen of its own. Retry; never ask for reconnect or install.
     return { view: "TEMPERROR" };
   }
 
-  function onStatus(s) {
+  function onStatus(s, quiet) {
     S.reached = true;
     S.status = s;
     S.waitGrab = false;
@@ -374,8 +427,31 @@
     var d = decide(s);
     if (s.google_access !== "unverified") { S.unverifiedSince = 0; }
     if (d.verify) { return runVerify(); }
+    if (quiet && d.view === S.view && (d.sub || null) === S.sub) { return null; }   // B4: unchanged
     go(d.view, d);
     return null;
+  }
+
+  // Every /status URL. OB nonce (s8.4, N-4): the re-front's rf rides on every /status until the
+  // first one answered 200 (CR5-27: a failed first claim must not lose it); each caller clears it
+  // where it judges that answer (clearRfOn200). The fragment loses it at once (fragment only), so
+  // a reload sends none. Never stored, never logged, never in any other request.
+  function statusPath() {
+    var p = "/status?tab=" + TAB;
+    if (S.rf) {
+      p += "&rf=" + S.rf;
+      if (S.ctx && S.ctx.returnId) {
+        try {
+          history.replaceState(null, "", location.href.split("#")[0] + "#return=" + S.ctx.returnId);
+        } catch (e) { /* the claim still went once */ }
+      }
+    }
+    return p;
+  }
+
+  // CR5-27: the claim that carried rf was answered: the nonce is spent.
+  function clearRfOn200(s) {
+    if (!s.network && s.status === 200) { S.rf = null; }
   }
 
   // A read's answer is acted on only if nothing made it stale meanwhile.
@@ -441,7 +517,8 @@
       var ok = !h.network && h.status === 200 && h.data && h.data.helper === "running";
       if (!ok) { return { silent: true }; }
       S.reached = true;
-      return call("GET", "/status?tab=" + TAB).then(function (s) {
+      return call("GET", statusPath()).then(function (s) {
+        clearRfOn200(s);
         if (s.network || s.status !== 200 || !s.data || typeof s.data !== "object") {
           return { silent: true };
         }
@@ -487,13 +564,19 @@
           if (stale(g)) { return null; }
           if (!h.network && h.status === 200 && h.data && h.data.helper === "running") {
             S.reached = true;
-            go("TEMPERROR");
+            if (S.status && keychainState(S.status.google_access)) {   // A6: never TempError
+              go("CHECKING", { sub: "checking", keychain: true });
+            } else {
+              go("TEMPERROR");
+            }
             return null;
           }
           return onSilent();
         });
       }
-      return call("GET", "/status?tab=" + TAB).then(function (s) {
+      S.lastVerifyAt = Date.now();
+      return call("GET", statusPath()).then(function (s) {
+        clearRfOn200(s);
         S.verifying = false;
         if (stale(g)) { return null; }
         if (s.network || s.status !== 200 || !s.data || typeof s.data !== "object") {
@@ -501,6 +584,41 @@
         }
         S.justVerified = true;
         try { onStatus(s.data); } finally { S.justVerified = false; }
+        return null;
+      });
+    });
+  }
+
+  // B4/UXB-4 (p3:444-446 "Ready now · checked just now"): R1 shown, the page becomes visible and
+  // this page's last /verify is older than READY_RECHECK_MS -> /verify in the background. No
+  // Checking view; the screen changes only if the answer changes the decision. Never overlaps
+  // another /verify (FX-6).
+  // Also OB (s8.2): ORGBLOCKED's "Try again" (one /verify per press, nothing while one is in
+  // flight, the button never disabled or hidden) and its B4 visibility re-check run through here.
+  function backgroundVerify(byPress) {
+    if (S.verifying || (S.view !== "R1" && S.view !== "ORGBLOCKED")) { return; }
+    var g = S.gen, from = S.view;
+    // MD-3 / FA2-1 (Reviewer 11:43:31): an ORGBLOCKED held by a blocked consent (last_flow
+    // admin_policy_enforced, reason not "org_blocked") is released ONLY by a "Try again" press:
+    // the B4 visibility re-check sends nothing for it. Reason-entered ORGBLOCKED keeps B4 as built.
+    var byReason = from === "ORGBLOCKED" && !!S.status && S.status.google_access_reason === "org_blocked";
+    if (from === "ORGBLOCKED" && byPress !== true && !byReason) { return; }
+    S.verifying = true;
+    call("POST", "/verify", "{}", VERIFY_TIMEOUT_MS).then(function (v) {
+      if (v.network) { S.verifying = false; return null; }   // the regular poll judges silence
+      S.lastVerifyAt = Date.now();
+      return call("GET", statusPath()).then(function (s) {
+        clearRfOn200(s);
+        S.verifying = false;
+        if (stale(g) || S.view !== from || s.network || s.status !== 200 || !s.data ||
+            typeof s.data !== "object") { return null; }
+        var lf = s.data.last_flow;
+        if (from === "ORGBLOCKED" && (byPress === true || byReason) &&
+            s.data.google_access_reason !== "org_blocked" && lf && lf.detail === "admin_policy_enforced") {
+          S.orgCleared = lf.id;          // the fresh check no longer says blocked: decide anew
+        }
+        S.justVerified = true;
+        try { onStatus(s.data, true); } finally { S.justVerified = false; }
         return null;
       });
     });
@@ -530,7 +648,7 @@
   }
   function tempFire() {
     temp.timer = null;
-    if (S.view !== "TEMPERROR") { return; }
+    if (S.view !== "TEMPERROR" && !S.keychainWait) { return; }
     if (temp.n >= TEMP_DELAYS_MS.length && document.hidden) { tempSchedule(); return; }
     temp.n += 1;
     recheck();
@@ -589,7 +707,13 @@
   function parseHash() {
     var h = location.hash || "";
     if (h === "#return" || h.indexOf("#return=") === 0) {
-      var id = h.slice(8);
+      var rp = h.slice(8).split("&"), id = rp[0];
+      // OB (s8.4): exactly "#return=<id>" or "#return=<id>&rf=<22-32 of [A-Za-z0-9_-]>"
+      if (rp.length === 2 && ID_RE.test(id) && /^rf=[A-Za-z0-9_-]{22,32}$/.test(rp[1])) {
+        S.rf = rp[1].slice(3);
+      } else if (rp.length !== 1) {
+        id = "";
+      }
       return newCtx("return", ID_RE.test(id) ? id : "");
     }
     if (h.indexOf("#ready=") === 0) {
@@ -616,6 +740,7 @@
   function startGoogle() {
     if (S.starting) { return; }
     S.starting = true;
+    S.startRefusedSig = null;            // B2: a new start attempt ends a refused start's NotFinished
     var body = JSON.stringify({ return_to: location.origin + RETURN_TO_PATH + "#return",
       return_mode: "redirect", tab: TAB });
     call("POST", "/connect/start", body).then(function (r) {
@@ -632,6 +757,14 @@
         return;
       }
       if (!r.network && r.status === 409 && d.error === "not_owner") { standDown(); return; }
+      if (!r.network && r.status !== 200 && r.status !== 409) {
+        // B2/F-B7 (Owner-pending, interim like F-11): the helper answered but refused to start
+        // (notably 503 "not configured"): p3's NotFinished, nothing of the answer shown, no
+        // navigation. It sticks until the next start or a change in the helper's state.
+        S.startRefusedSig = stateSig(S.status);
+        go("NOTFINISHED");
+        return;
+      }
       tickNow();                         // silent -> R3; otherwise the helper's state decides
     });
   }
@@ -706,6 +839,7 @@
   on("b-cont", startGoogle);                 // N11
   on("b-rec", startGoogle);                  // R2
   on("b-try", recheck);                      // N12 "Try now"
+  on("b-orgtry", function () { backgroundVerify(true); });   // OB "Try again" (s8.2); MD-3: the press path
   on("b-claude", function () { openClaudeViaHelper(false); });      // N9 D
   on("b-claude-r1", function () { openClaudeViaHelper(false); });   // R1
   on("b-oc", function () { openClaudeViaHelper(true); });           // N10 NotLoaded
@@ -722,7 +856,12 @@
   // ------------------------------------------------------------------ resume (R-resume)
   document.addEventListener("visibilitychange", function () {
     requery();
-    if (!document.hidden && S.view !== null && shouldPoll()) { tickNow(); }
+    if (!document.hidden && S.view !== null && shouldPoll()) {
+      if ((S.view === "R1" || S.view === "ORGBLOCKED") && Date.now() - S.lastVerifyAt > READY_RECHECK_MS) {
+        backgroundVerify();
+      }
+      tickNow();
+    }
   });
   window.addEventListener("focus", requery);
   window.addEventListener("pageshow", function (e) {

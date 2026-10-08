@@ -48,10 +48,10 @@ jobs:
       - name: Assemble the site and the extension
         run: |
           mkdir -p "$RUNNER_TEMP/_site"
-          cp site/index.html site/app.js site/style.css site/views.js "$RUNNER_TEMP/_site/"
+          cp -R site/index.html site/app.js site/style.css site/views.js site/fonts "$RUNNER_TEMP/_site/"
           cp "$RUNNER_TEMP/out/grabmcp-ga4-bridge.mcpb" "$RUNNER_TEMP/_site/"
           ls -l "$RUNNER_TEMP/_site"
-          sha256sum "$RUNNER_TEMP/_site/"*
+          find "$RUNNER_TEMP/_site" -type f -exec sha256sum {} +
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ${{ runner.temp }}/_site
