@@ -4,88 +4,224 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow, noarchive">
-<title>Connect Google Analytics to Claude</title>
+<!-- O-1 (lead D3, Reviewer gate 06:43:05): p3's own brand string (p3:150). -->
+<title>GrabMCP</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<main id="main">
-  <header class="intro">
-    <h1>Connect Google Analytics to Claude</h1>
-    <p>Follow these steps from top to bottom. This page checks your progress by itself, so you
-      do not need to reload it. It keeps no passwords or keys: your Google sign-in stays on your
-      own Mac.</p>
-  </header>
+<!-- WP-S1 (PLAN-05 v1.1): the screens of the Owner-approved prototype p3
+     (GA4-Connection-Journey-v2-prototype-r3-p3.html, 47,661 B, 82353521...), built exactly.
+     Markup contract: INTERFACE-05 §4. One <section data-state> per state; every section is
+     hidden by default and views.js render(state, opts) shows exactly one. Product strings are
+     p3's bytes (ASCII apostrophes as p3 renders them). Owner-pending texts carry
+     data-owner-pending="F-n" (plan §13). Prototype-only content (narration, rail, chips,
+     fault buttons, fake browser bar, every placeholder, every "(simulation)" label) is not
+     shipped. -->
+<header class="site-h">
+  <h1 class="brand">GrabMCP</h1>
+  <!-- p3 progress(n): written by views.js; empty for progress(0). -->
+  <ol class="prog" id="prog" aria-label="Progress"></ol>
+</header>
 
-  <ol class="steps">
-    <li class="step" id="step-download">
-      <h2>Get the Claude extension</h2>
-      <!-- D6 (Reviewer 11:24): ONE switch, MCPB_ON_SITE in app.js, picks the variant. Default
-           (b): the file is sent to you; (a), the download, is turned on only by the Owner's ruling. -->
-      <div id="get-received">
-        <p>Find the file <span class="file">grabmcp-ga4-bridge.mcpb</span> that you received from
-          grabmcp (for example as an email attachment) and save it to your Mac.</p>
-      </div>
-      <div id="get-download" hidden>
-        <p><a class="button" id="download-link" href="grabmcp-ga4-bridge.mcpb" download>Download the extension</a></p>
-      </div>
-      <p class="hint">The file is called <span class="file">grabmcp-ga4-bridge.mcpb</span>.</p>
-    </li>
+<main class="stage" id="stage" aria-live="polite">
 
-    <li class="step" id="step-install">
-      <h2>Install it in Claude Desktop</h2>
-      <p>Make sure Claude Desktop is open, then double-click that file; Claude Desktop
-        will show an install window, and you click <strong>Install</strong>.</p>
-    </li>
-
-    <li class="step" id="step-helper">
-      <h2>Let this page find the extension</h2>
-      <p id="helper-status" class="status" role="status" aria-live="polite">Checking whether the extension is running…</p>
-      <p class="hint" id="helper-hint">Chrome may ask whether this site may <strong>access other
-        apps and services on this device</strong> or <strong>devices on your local network</strong>.
-        Click <strong>Allow</strong>. That is how this page talks to the extension on your own
-        Mac; nothing leaves your computer this way.</p>
-    </li>
-
-    <li class="step" id="step-connect">
-      <h2>Connect Google Analytics</h2>
-      <p><button type="button" class="button" id="connect-btn" disabled>Connect Google Analytics</button></p>
-      <p id="connect-status" class="status" role="status" aria-live="polite">This button works once the extension has been found (step 3).</p>
-      <p><button type="button" class="button secondary" id="retry-btn" hidden>Try again</button></p>
-      <p id="signin-fallback" hidden>Your browser blocked the new tab.
-        <a id="signin-link" target="_blank" rel="noopener">Open the Google sign-in page</a></p>
-      <details class="hint">
-        <summary>Google says “Google hasn’t verified this app”?</summary>
-        <p>This is expected for now. On that screen click <strong>Advanced</strong>, then
-          <strong>Go to … (unsafe)</strong>, then choose your Google account and click
-          <strong>Continue</strong> or <strong>Allow</strong>. The app only asks to
-          <em>read</em> your Analytics; it cannot change anything.</p>
-      </details>
-    </li>
-
-    <li class="step" id="step-google">
-      <h2>Check that Google access works</h2>
-      <p id="google-status" class="status" role="status" aria-live="polite">Not connected to Google yet.</p>
-    </li>
-
-    <li class="step" id="step-ask">
-      <h2>Ask Claude about your Analytics</h2>
-      <p>Open Claude Desktop and ask a question about your website, for example:</p>
-      <p class="example" id="example-question">“How many people visited my website in the last 7 days?”</p>
-    </li>
-
-    <li class="step" id="step-claude">
-      <h2>Confirm that Claude read your Analytics</h2>
-      <p id="claude-status" class="status" role="status" aria-live="polite">Waiting for Claude to read your Analytics. This page checks every few seconds.</p>
-    </li>
-  </ol>
-
-  <section class="disconnect" aria-labelledby="disconnect-title">
-    <h2 id="disconnect-title">Disconnect</h2>
-    <p>Removes the saved Google sign-in from this Mac and asks Google to withdraw the access.</p>
-    <p><button type="button" class="button small" id="disconnect-btn" disabled>Disconnect</button></p>
-    <p id="disconnect-status" class="status" role="status" aria-live="polite"></p>
+  <!-- p3 A() · progress 1 -->
+  <section data-state="A" class="col fade" hidden>
+    <div class="eyebrow">Google Analytics 4 · for Claude Desktop</div>
+    <h2>Ask Claude about your Google Analytics</h2>
+    <p class="lead">Connect once. Then ask Claude about your site's traffic in your own words, whenever you like.</p>
+    <div class="steps">
+      <div><span class="num">1</span><span class="t"><b>Install GrabMCP in Claude Desktop</b><br><span class="s">One time, on this Mac.</span></span></div>
+      <div><span class="num">2</span><span class="t"><b>Give Google permission</b><br><span class="s">Let GrabMCP on this Mac read your Analytics data for Claude.</span></span></div>
+      <div><span class="num">3</span><span class="t"><b>Use it in Claude</b><br><span class="s">Ask anything, whenever you like. Your Google sign-in stays on this Mac; GrabMCP's servers never receive it or your data.</span></span></div>
+    </div>
+    <!-- p3 draws this note only while the browser has not decided (lnaGranted false);
+         render('A', {lnaNote:false}) hides it. -->
+    <div class="note" data-part="lna-note"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2 L8 11.2"/><path d="M8 4.8 L8 4.9"/></svg><span>When you click, your browser may ask to let this page connect to GrabMCP on this computer. That's how this page sees when installing is done, so it can continue on its own. The choice is yours.</span></div>
+    <!-- p3 draws a button; it is a link here so the download starts in the same gesture
+         (the existing installer URL). -->
+    <a class="btn" id="b-dl" href="grabmcp-ga4-bridge.mcpb" download>Download and install</a>
+    <p class="small">For Claude Desktop on macOS. Don't have it? <a href="https://claude.ai/download" target="_blank" rel="noopener">Get Claude Desktop</a></p>
+    <details><summary>How it works and what GrabMCP can see</summary>
+      <p>GrabMCP adds a small component to Claude Desktop on this Mac. It runs Google's own Google Analytics server, and it works only while Claude Desktop is open.</p>
+      <p>When you ask Claude about your traffic, the component gets the report from Google and hands it to Claude. Your questions and the answers go to Claude (Anthropic).</p>
+      <p>Your Google sign-in is stored on this Mac, in the macOS Keychain. It never reaches GrabMCP's servers or this page's code.</p>
+      <p>This page talks only to the component on your computer, to see whether it is installed, signed in to Google and ready in Claude, and which Analytics property it uses. It never sees your reports.</p>
+      <p>You can remove GrabMCP's access at any time in your Google Account: <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener">Third-party apps &amp; services</a>.</p>
+    </details>
   </section>
+
+  <!-- p3 LnaBlocked() · progress 1 -->
+  <section data-state="LNABLOCKED" class="col fade" hidden>
+    <div class="okhead infohead"><span class="badge"><svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2 L8 11.2"/><path d="M8 4.8 L8 4.9"/></svg></span><div><h2 class="h26">This page can't see GrabMCP yet</h2></div></div>
+    <p class="lead">Your browser is blocking this page from connecting to apps on this computer. Installing still works; this only stops the page from continuing on its own.</p>
+    <button type="button" class="btn" id="b-how">Show how to allow it</button>
+    <!-- Hidden as in p3; b-how reveals it. render() re-hides it on entering the state. -->
+    <div class="box" id="howbox" data-reset-hidden hidden>
+      <p><b class="ink">In Chrome:</b></p>
+      <ol class="howsteps"><li>Click the site settings icon at the left of the address bar.</li><li>Select <b>Site settings</b>.</li><li>Find <b>Apps on device</b> (in Chrome 142–144 it's called <b>Local network access</b>).</li><li>Set it to <b>Allow</b>.</li></ol>
+      <p>This is the only setting GrabMCP needs here. It isn't related to camera, location or notifications.</p>
+    </div>
+    <div class="status plain" role="status"><span class="spin" aria-hidden="true"></span><span>This page continues on its own once it's allowed.</span></div>
+  </section>
+
+  <!-- p3 B() · progress 1 (the browser's downloads bubble and Claude's install screen are
+       platform screens: not drawn) -->
+  <section data-state="B" class="col fade" hidden>
+    <h2>Finish installing in Claude Desktop</h2>
+    <div class="steps">
+      <div><span class="num">1</span><span class="t"><b>Open the file you just downloaded</b><br><span class="s">It's in your browser's downloads. It opens in Claude Desktop.</span></span></div>
+      <div><span class="num">2</span><span class="t"><b>Confirm the install in Claude Desktop</b><br><span class="s">Claude shows its own install screen, with a warning that Anthropic hasn't reviewed this extension. Installing is your choice. GrabMCP needs it to work in Claude.</span></span></div>
+    </div>
+    <div class="status" role="status"><span class="spin" aria-hidden="true"></span><span><b>Waiting for GrabMCP to start in Claude Desktop…</b><br><span class="ink2">This page moves on by itself. You don't need to come back and click anything.</span></span></div>
+    <p class="small start">Can't find the file? <a href="grabmcp-ga4-bridge.mcpb" download id="b-again">Download it again</a></p>
+  </section>
+
+  <!-- p3 NotDetected() · progress 1 -->
+  <section data-state="NOTDETECTED" class="col fade" hidden>
+    <div class="okhead infohead"><span class="badge"><svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2 L8 11.2"/><path d="M8 4.8 L8 4.9"/></svg></span><div><h2 class="h26">GrabMCP hasn't started yet</h2></div></div>
+    <p class="lead">We haven't detected GrabMCP on this computer. It starts when Claude Desktop is open. If the install in Claude Desktop didn't finish, you can download the file again.</p>
+    <button type="button" class="btn" id="b-ocd">Open Claude Desktop</button>
+    <button type="button" class="btn sec" id="b-redl">Download the file again</button>
+    <div class="status plain" role="status"><span class="spin" aria-hidden="true"></span><span>This page keeps looking and continues on its own.</span></div>
+  </section>
+
+  <!-- p3 Cgoogle() · progress 2 -->
+  <section data-state="C" class="card fade" hidden>
+    <div class="pair"><span>GrabMCP</span><span aria-hidden="true">⇄</span><span>Google Analytics</span></div>
+    <h2 class="h26 center">Allow Claude to read your Google Analytics</h2>
+    <p class="muted center">Next, Google asks whether GrabMCP on this Mac may read your Analytics data. When you ask Claude, GrabMCP gets the data from Google and hands it to Claude.</p>
+    <div class="can">
+      <b class="can-h">With this access, Claude can:</b>
+      <div class="chk"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5 L6.5 12 L13 4.5"/></svg><span>See your Google Analytics reports and data</span></div>
+      <div class="chk"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5 L6.5 12 L13 4.5"/></svg><span>Answer your questions about your site's traffic</span></div>
+      <p class="muted">Read-only: it can't change anything in your Google Analytics account. Your Google sign-in is saved on this Mac; GrabMCP's servers never receive it.</p>
+    </div>
+    <div class="grey">Google may show that it hasn't verified GrabMCP yet. Whether to continue is your choice.</div>
+    <button type="button" class="btn" id="b-google">Continue with Google</button>
+    <details><summary>How we handle your data</summary>
+      <p>GrabMCP gets read-only access to your Analytics data. Nothing in your account can be changed.</p>
+      <p>Your Google sign-in is stored on this Mac, in the macOS Keychain. It never reaches GrabMCP's servers or this page's code.</p>
+      <p>Reports go from Google to GrabMCP on this Mac, and from there to Claude (Anthropic) when you ask.</p>
+      <p>To remove access later, use your Google Account: <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener">Third-party apps &amp; services</a>.</p>
+    </details>
+  </section>
+
+  <!-- p3 Checking() · progress 2 · data-sub="checking"|"finishing" -->
+  <section data-state="CHECKING" data-sub="checking" class="col fade" hidden>
+    <div class="status" role="status" aria-labelledby="st-checking" data-sub-part="checking"><span class="spin" aria-hidden="true"></span><span id="st-checking"><b>Checking your Google sign-in…</b></span></div>
+    <div class="status" role="status" aria-labelledby="st-finishing" data-sub-part="finishing" hidden><span class="spin" aria-hidden="true"></span><span id="st-finishing"><b>Finishing setup in Claude Desktop…</b></span></div>
+  </section>
+
+  <!-- p3 TempError() · progress 2 -->
+  <section data-state="TEMPERROR" class="col fade" hidden>
+    <div class="okhead infohead"><span class="badge"><svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2 L8 11.2"/><path d="M8 4.8 L8 4.9"/></svg></span><div><h2 class="h26">We couldn't check your Google access just now</h2></div></div>
+    <p class="lead">Google didn't respond. This is usually temporary; nothing needs to be installed or approved again.</p>
+    <div class="status plain" role="status"><span class="spin" aria-hidden="true"></span><span>Trying again automatically…</span></div>
+    <button type="button" class="btn" id="b-try">Try now</button>
+  </section>
+
+  <!-- p3 NotLoaded() · progress 2 -->
+  <section data-state="NOTLOADED" class="col fade" hidden>
+    <div class="okhead infohead"><span class="badge"><svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2 L8 11.2"/><path d="M8 4.8 L8 4.9"/></svg></span><div><h2 class="h26">Almost ready</h2><p class="muted">Google access is set up.</p></div></div>
+    <p class="lead">Claude Desktop hasn't finished loading GrabMCP yet.</p>
+    <div class="status plain" role="status"><span class="spin" aria-hidden="true"></span><span>This page continues on its own when it's ready.</span></div>
+    <button type="button" class="btn" id="b-oc">Open Claude Desktop</button>
+  </section>
+
+  <!-- p3 NotFinished() · progress 2 -->
+  <section data-state="NOTFINISHED" class="col fade" hidden>
+    <div class="okhead warnhead"><span class="badge"><svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 1.8 L15 14 L1 14 Z"/><path d="M8 6.2 L8 9.6"/><path d="M8 11.8 L8 11.9"/></svg></span><div><h2 class="h26">Google sign-in didn't finish</h2></div></div>
+    <p class="lead">Nothing was connected. You can continue where you stopped; there's nothing to install again.</p>
+    <button type="button" class="btn" id="b-cont">Continue to Google</button>
+  </section>
+
+  <!-- ORGBLOCKED (INTERFACE-05 §8.2): Owner-ruled copy (08:19), no p3 screen; NotFinished's structure; progress 2 as TempError. -->
+  <section data-state="ORGBLOCKED" class="col fade" hidden>
+    <div class="okhead warnhead"><span class="badge"><svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 1.8 L15 14 L1 14 Z"/><path d="M8 6.2 L8 9.6"/><path d="M8 11.8 L8 11.9"/></svg></span><div><h2 class="h26">Your organization blocked this connection</h2></div></div>
+    <p class="lead">Your organization blocked GrabMCP's access to your Google account. Ask your admin to allow it, then try again.</p>
+    <button type="button" class="btn" id="b-orgtry">Try again</button>
+  </section>
+
+  <!-- p3 Interrupted(exact) · progress 2 · data-variant="neutral"|"exact" -->
+  <section data-state="INTERRUPTED" data-variant="neutral" class="col fade" hidden>
+    <div class="okhead infohead"><span class="badge"><svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2 L8 11.2"/><path d="M8 4.8 L8 4.9"/></svg></span><div><h2 class="h26">Connecting to Google was interrupted</h2></div></div>
+    <p class="lead" data-variant-part="exact" hidden>Claude Desktop closed while you were signing in to Google. GrabMCP is still installed.</p>
+    <p class="lead" data-variant-part="neutral">We can't reach GrabMCP on this computer right now, so we couldn't finish connecting to Google. GrabMCP is still installed, and it runs while Claude Desktop is open.</p>
+    <button type="button" class="btn" id="b-oc2">Open Claude Desktop</button>
+    <div class="status plain" role="status"><span class="spin" aria-hidden="true"></span><span>This page continues on its own, and only asks Google again if it has to.</span></div>
+  </section>
+
+  <!-- p3 D() · progress 3 -->
+  <section data-state="D" class="col fade" hidden>
+    <div class="okhead"><span class="badge"><svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5 L6.5 12 L13 4.5"/></svg></span><div><h2>Google Analytics is ready in Claude</h2><p class="muted">For <span data-slot="property" data-owner-pending="F-9">your Google Analytics property</span></p></div></div>
+    <p class="lead">Open Claude and ask about your site's traffic whenever you like, in your own words.</p>
+    <div class="note"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2 L8 11.2"/><path d="M8 4.8 L8 4.9"/></svg><span>The first time you ask, Claude checks whether GrabMCP may read Google Analytics. Allowing it lets Claude answer from your data.</span></div>
+    <button type="button" class="btn" id="b-claude">Open Claude Desktop</button>
+    <p class="small start">Need an idea? “How many people visited my site last week?” Or anything else. You can close this page.</p>
+    <details><summary>What we checked</summary><p>Google access granted · just now<br>Test read from Google Analytics worked · just now<br>Claude Desktop has loaded GrabMCP · just now</p></details>
+  </section>
+
+  <!-- p3 LaunchFailed() · progress 3 -->
+  <section data-state="LAUNCHFAILED" class="col fade" hidden>
+    <div class="okhead warnhead"><span class="badge"><svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 1.8 L15 14 L1 14 Z"/><path d="M8 6.2 L8 9.6"/><path d="M8 11.8 L8 11.9"/></svg></span><div><h2 class="h26">Claude Desktop didn't open</h2><p class="muted">GrabMCP is ready.</p></div></div>
+    <p class="lead">Claude Desktop didn't open from this page.</p>
+    <button type="button" class="btn" id="b-again2">Try again</button>
+    <p class="small start">Don't have Claude Desktop on this Mac? <a href="https://claude.ai/download" target="_blank" rel="noopener">Get Claude Desktop</a></p>
+  </section>
+
+  <!-- p3 R1() · progress 0. p3 reuses the id b-claude here; one document cannot hold two
+       elements with one id, so this button is b-claude-r1 (FLAG to the lead). -->
+  <section data-state="R1" class="col fade" hidden>
+    <h2>Google Analytics is ready in Claude</h2>
+    <div class="rows">
+      <div class="chk ink"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5 L6.5 12 L13 4.5"/></svg><span>Ready now · checked just now</span></div>
+      <!-- History line: hidden while there is no last use (F-9, Owner-pending). -->
+      <div class="ink2" data-part="last-used" hidden>Last used in Claude: <b class="ink" data-slot="last-used" data-owner-pending="F-9">—</b></div>
+    </div>
+    <button type="button" class="btn" id="b-claude-r1">Open Claude Desktop</button>
+  </section>
+
+  <!-- p3 R2() · progress 0 -->
+  <section data-state="R2" class="col fade" hidden>
+    <div class="okhead warnhead"><span class="badge"><svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 1.8 L15 14 L1 14 Z"/><path d="M8 6.2 L8 9.6"/><path d="M8 11.8 L8 11.9"/></svg></span><div><h2 class="h26">Reconnect Google Analytics</h2></div></div>
+    <!-- R2 lead: Owner ruling 08:15/08:17 (INTERFACE-05 §8.5), replacing p3's bracketed sentence. -->
+    <p class="lead" id="r2-lead">Your Google account is no longer connected: access was removed or expired. Reconnect to pick up where you left off.</p>
+    <div class="box"><p><b class="ink">Next, Google asks again</b> whether GrabMCP on this Mac may read your Analytics data, read-only. Your sign-in stays on this Mac; GrabMCP's servers never receive it.</p></div>
+    <div class="grey">Google may show that it hasn't verified GrabMCP yet. Whether to continue is your choice.</div>
+    <button type="button" class="btn" id="b-rec">Continue with Google</button>
+    <details><summary>How we handle your data</summary>
+      <p>GrabMCP gets read-only access to your Analytics data. Nothing in your account can be changed.</p>
+      <p>Your Google sign-in is stored on this Mac, in the macOS Keychain. It never reaches GrabMCP's servers or this page's code.</p>
+      <p>Reports go from Google to GrabMCP on this Mac, and from there to Claude (Anthropic) when you ask.</p>
+      <p>To remove access later, use your Google Account: <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener">Third-party apps &amp; services</a>.</p>
+    </details>
+  </section>
+
+  <!-- p3 R3() · progress 0 -->
+  <section data-state="R3" class="col fade" hidden>
+    <h2>We can't reach GrabMCP on this computer</h2>
+    <p class="lead">GrabMCP runs while Claude Desktop is open.</p>
+    <div class="status plain" role="status"><span class="spin" aria-hidden="true"></span><span>This page continues on its own when GrabMCP can be reached.</span></div>
+    <button type="button" class="btn" id="b-open">Open Claude Desktop</button>
+    <p class="small">Haven't installed GrabMCP on this computer? <a href="#" id="b-inst">Install it</a></p>
+  </section>
+
+  <!-- p3's interim view after the Open buttons of NotDetected, NotLoaded, Interrupted and R3
+       (show(waitLine(...))). data-sub="grabmcp"|"claude". p3 leaves the progress bar as it was. -->
+  <section data-state="WAITING" data-sub="grabmcp" class="col fade" hidden>
+    <div class="status plain" role="status" aria-labelledby="st-wait-grabmcp" data-sub-part="grabmcp"><span class="spin" aria-hidden="true"></span><span id="st-wait-grabmcp"><b>Waiting for GrabMCP…</b></span></div>
+    <div class="status plain" role="status" aria-labelledby="st-wait-claude" data-sub-part="claude" hidden><span class="spin" aria-hidden="true"></span><span id="st-wait-claude"><b>Waiting for Claude Desktop…</b></span></div>
+  </section>
+
+  <!-- The tab that stands down (no p3 screen). F-12, Owner-pending: the UI/UX Developer's
+       draft, no control. -->
+  <section data-state="PASSIVE" class="col fade" hidden>
+    <p class="lead" data-owner-pending="F-12">This setup continues in another tab.</p>
+  </section>
+
 </main>
+<script src="views.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
