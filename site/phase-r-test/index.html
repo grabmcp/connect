@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Connection status · GrabMCP phase-R test page (not the product)</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-page="status-r">
+  <!-- Compliance line (leg-a/LA-06/compliance-line/LINE.md): the page states on screen that it is a
+       test page, not the product. No analytics or tag-manager tag; nothing is collected; the only
+       host it calls is the helper on this computer, http://127.0.0.1. -->
+  <p class="banner" role="note" data-real-or-mocked="test-page"><strong>Test page — not the GrabMCP product.</strong> This page tests whether your browser lets a web page see the GrabMCP helper on this computer. It talks only to the helper at http://127.0.0.1 on your own machine. It collects nothing and sends nothing anywhere else.</p>
+
+  <main>
+    <h1>Connection status</h1>
+
+    <p id="status" class="status" role="status" aria-live="polite"><span data-role="status-label"></span></p>
+
+    <!-- The run config did not load or lacks a key: the page calls nothing. -->
+    <section data-panel="config-missing" hidden>
+      <p>The test configuration did not load, so this page calls nothing.</p>
+      <p class="muted">Missing or not usable: <code data-role="config-missing-keys"></code></p>
+    </section>
+
+    <!-- Message A: the pre-install explainer, before the browser's permission prompt. Verbatim; keep on one line. -->
+    <section class="message" data-message="A" data-shows-in="waiting-component" hidden>
+      <p data-message-text="A">Setup needs one browser permission, <span data-field="permission-name" data-filled="false">[permission name]</span>, to verify your connection. Click <span data-field="allow-label" data-filled="false">[Allow]</span> when asked.</p>
+    </section>
+
+    <!-- The documented exit to help, inside waiting-component, once the browser's permission request
+         has stayed unanswered past bound B. No control here; it asserts nothing. Copy PROPOSED. -->
+    <section class="message" data-panel="help-exit" hidden>
+      <p data-role="help-exit-text">No answer to the browser's permission request yet. If you can't find the request, these steps show where to turn the permission on:</p>
+      <ol class="steps" data-field="help-steps" data-filled="false">
+        <li>[re-enable steps for this browser]</li>
+      </ol>
+      <p class="muted">This page continues by itself once the permission is on.</p>
+    </section>
+
+    <!-- Message B: the user blocked the permission. Verbatim; no control here leads forward (R-1). -->
+    <section class="message" data-message="B" data-shows-in="blocked" hidden>
+      <p data-message-text="B">The permission is still off, and that's easy to fix. Once you approve it, we'll continue.</p>
+      <a href="#reenable-steps" data-control="show-me-how" aria-expanded="false" aria-controls="reenable-steps">Show me how</a>
+      <div id="reenable-steps" hidden>
+        <ol class="steps" data-field="reenable-steps" data-filled="false">
+          <li>[re-enable steps for this browser]</li>
+        </ol>
+        <p class="muted">This page continues by itself once the permission is on.</p>
+      </div>
+    </section>
+
+    <!-- Message C: the browser shows no permission prompt. Verbatim; the exit hands over this request's URL. -->
+    <section class="message" data-message="C" data-shows-in="no-prompt" hidden>
+      <p data-message-text="C">Almost done. This browser can't verify the connection. Open this page in <span data-field="supported-browser" data-filled="false">[supported browser]</span> to finish.</p>
+      <p>Link to this page: <code data-role="request-url"></code></p>
+      <button type="button" class="secondary" data-control="copy-link">Copy link</button>
+      <p class="muted" data-role="copy-note" aria-live="polite"></p>
+    </section>
+
+    <section data-shows-in="connected" hidden>
+      <p>Last answer from the helper at <time data-role="observed-at"></time>.</p>
+    </section>
+
+    <!-- last-seen: past tense, no control. Copy PROPOSED. -->
+    <section data-shows-in="last-seen" hidden>
+      <p class="muted">This page updates by itself when the helper answers again.</p>
+    </section>
+
+    <!-- Google access, as the helper's own /status reports it. Shown only once the helper answered.
+         No label here is set by the user (R-2). Copy PROPOSED. -->
+    <p id="access" class="status access" role="status" aria-live="polite" data-shows-in="connected last-seen" hidden><span data-role="access-label"></span></p>
+    <!-- Past tense only, from the helper's answer_success.at (a report call our harness made). It never
+         claims a result in Claude: that label is an Owner HITL point (annex 1 C-11). Copy PROPOSED. -->
+    <p class="muted" data-panel="first-result" hidden>A first report result was recorded at <time data-field="first-result-at"></time>.</p>
+
+    <!-- Test mode. Revealed by the address fragment #mode=test (or #return=…, where the helper sends
+         the browser back after a test sign-in). THE FRAGMENT IS A MODE SWITCH, NOT A SECRET: anyone can
+         type it. It only shows these buttons. Every call below is a POST and fires ONLY from a click
+         on its button (a user gesture), never on load and never from the fragment alone (D2 ruling,
+         RVW 18:16:22). Shown only while the helper is connected, so no control leads forward while
+         the permission is blocked or unanswered (R-1). -->
+    <section class="test-controls" data-panel="test-controls" hidden>
+      <h2>Test controls</h2>
+      <p class="muted">Test mode. These buttons call the helper on this computer only when you click them.</p>
+      <button type="button" data-control="verify" data-helper-call="POST /verify">Check Google access</button>
+      <button type="button" data-control="connect-start" data-helper-call="POST /connect/start">Start Google sign-in</button>
+      <button type="button" data-control="claude-open" data-helper-call="POST /claude/open">Open Claude Desktop</button>
+      <p data-panel="sign-in-link" hidden><a data-control="continue-sign-in" href="#" rel="noreferrer">Continue to the sign-in page</a></p>
+      <p class="muted" data-role="test-result" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script src="runtime-config.js"></script>
+  <script src="pages-r.js"></script>
+</body>
+</html>
