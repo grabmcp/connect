@@ -52,7 +52,7 @@ jobs:
           cp -R site/phase-r-test "$RUNNER_TEMP/_site/"   # leg A phase-R test page; reverted with its removal on 2026-10-20
           cp "$RUNNER_TEMP/out/grabmcp-ga4-bridge.mcpb" "$RUNNER_TEMP/_site/"
           ls -l "$RUNNER_TEMP/_site"
-          sha256sum "$RUNNER_TEMP/_site/"*
+          find "$RUNNER_TEMP/_site" -type f -exec sha256sum {} +   # leg A: _site now holds a folder; reverted 2026-10-20
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: ${{ runner.temp }}/_site
